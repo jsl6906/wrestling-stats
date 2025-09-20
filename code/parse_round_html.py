@@ -192,7 +192,32 @@ NAME_CONVERSIONS_RAW: List[Tuple[str, str]] = [
 ]
 
 TEAM_CONVERSIONS_RAW: List[Tuple[str, str]] = [
-    # (r"\bFt\.?\s*Belvoir\b", "Fort Belvoir"),
+    (r"\bAlexandria\s+Junior\s+Titans\b", "Alexandria"),
+    (r"\bAnnandale\s+Mat\s+Rats\b", "Annendale"),
+    (r"\bBraddock\s+Wrestling\s+Club\b", "Braddock"),
+    (r"\bE9\s*Wrestling\b|\bE9Wrestling\b", "E9 Wrestling"),
+    (r"\bFauquier\s+Wrestling\b", "Fauquier"),
+    (r"\bFort\s*Belvoir\b|\bFortBelvoir\b", "Fort Belvoir"),
+    (r"\bFranconia\s+Wrestling\s+Club\b", "Franconia"),
+    (r"\bGunston\s+Wrestling\s+Club\b", "Gunston"),
+    (r"\bHerndon\s*Hawks\b|\bHerndonHawks\b", "Herndon Hawks"),
+    (r"\bKing\s*George\b|\bKingGeorge\b", "King George"),
+    (r"\bKing\s+George\s+Wrestling\s+Club\b", "King George"),
+    (r"\bAlexandria\b", "Alexandria Junior Titans"),  # note: later rule overrides earlier mapping
+    (r"\bMcLean\s+Lions?\s+Wrestling\b", "McLean"),
+    (r"\bMount\s+Vernon\s+Youth\s+Wrestling\b", "Mt Vernon"),
+    (r"\bMount\s*Vernon\b|\bMountVernon\b", "Mt Vernon"),
+    (r"\bPit\s*Bull\b|\bPitBull\b", "Pit Bull"),
+    (r"\bPrince\s+William\s+County\s+Wrestling\s+Club\b", "Prince William"),
+    (r"\bPrince\s+William\s+Wrestling\s+Club\b", "Prince William"),
+    (r"\bPrinceWilliam\b", "Prince William"),
+    (r"\bScanlon\s+Wrestling\b", "Scanlan"),
+    (r"\bSmyrna\s+Wrestling\b", "Smyrna"),
+    (r"\bSouth\s+County\s+Athletic\s+Association\b", "South County"),
+    (r"\bSouthCounty\b", "South County"),
+    (r"\bVienna\s+Youth\s+Inc\b", "Vienna"),
+    (r"\bVikings?\s+Wrestling\s+Club\b", "Vikings"),
+    (r"\bWild\s*Buffalos\b|\bWildBuffalos\b", "Wild Buffalos"),
 ]
 
 NAME_CONVERSIONS = [(re.compile(pat, re.IGNORECASE), repl) for pat, repl in NAME_CONVERSIONS_RAW]
