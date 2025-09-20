@@ -1,0 +1,139 @@
+Project "wrestling-stats" {
+  database_type: "DuckDB"
+  note: "Schema for NVWF scraping, parsed matches, and Elo calculations"
+}
+
+Table tournaments {
+  event_id text [pk]
+  name text
+  year int
+  start_date date
+  end_date date
+  address text
+  venue text
+  street text
+  city text
+  state text
+  postal_code text
+  first_seen datetime [note: "DEFAULT current_timestamp"]
+}
+
+Table tournament_rounds {
+  event_id text
+  round_id text
+  label text
+  raw_html text
+  parsed_ok boolean
+  first_seen datetime [note: "DEFAULT current_timestamp"]
+
+  indexes {
+    (event_id, round_id) [pk]
+  }
+
+}
+
+Table matches {
+  event_id text
+  round_id text
+  weight_class text
+  raw_match_results text
+
+  // Parsed fields
+  round_detail text
+  winner_name text
+  winner_team text
+  decision_type text
+  loser_name text
+  loser_team text
+  decision_type_code text
+  winner_points int
+  loser_points int
+  fall_time text
+  bye boolean
+  first_seen datetime [note: "DEFAULT current_timestamp"]
+
+  // Elo outputs and metadata
+  winner_elo_after double
+  winner_elo_adjustment double
+  loser_elo_after double
+  loser_elo_adjustment double
+  elo_computed_at datetime
+  elo_sequence bigint
+  winner_elo_before double
+  loser_elo_before double
+  expected_winner double
+  expected_loser double
+  k_applied double
+  k_type_mult double
+  k_mov_mult double
+  k_quick_mult double
+  margin int
+  fall_seconds int
+  round_order int
+  winner_prev_matches int
+  loser_prev_matches int
+
+  indexes {
+    (event_id)
+    (event_id, round_id)
+    (winner_name)
+    (loser_name)
+  }
+}
+
+Table wrestlers {
+  name text [pk]
+  current_elo double
+  matches_played int
+  last_event_id text
+  last_start_date date
+  last_updated datetime [note: "DEFAULT current_timestamp"]
+  last_opponent_name text
+  last_adjustment double
+  last_team text
+  best_elo double
+  best_date date
+}
+
+Table wrestler_history {
+  match_rowid bigint
+  role text // 'W' or 'L'
+  name text
+  team text
+  event_id text
+  round_id text
+  weight_class text
+  start_date date
+  opponent_name text
+  opponent_team text
+  pre_elo double
+  post_elo double
+  adjustment double
+  expected_score double
+  k_applied double
+  k_type_mult double
+  k_mov_mult double
+  k_quick_mult double
+  decision_type text
+  decision_type_code text
+  margin int
+  fall_seconds int
+  round_detail text
+  round_order int
+  bye boolean
+  elo_sequence bigint
+  last_updated datetime [note: "DEFAULT current_timestamp"]
+
+  indexes {
+    (match_rowid, role) [pk]
+    (name)
+    (event_id)
+    (event_id, round_id)
+  }
+}
+
+Ref: tournaments.event_id < tournament_rounds.event_id
+Ref: tournaments.event_id < matches.event_id
+Ref: tournament_rounds.round_id < matches.round_id
+Ref: wrestlers.name < wrestler_history.name
+Ref: tournaments.event_id < wrestler_history.event_id
