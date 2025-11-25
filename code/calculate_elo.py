@@ -20,6 +20,10 @@ Notes:
   - tech fall (TF)/major (MD)/SV-1/OT: K*1.10
   - decision (Dec): K*1.00
   - bye: ignored (no Elo change)
+- Close-loss credit: an underdog can receive partial credit on a close loss (small point margin or SV/OT),
+	which slightly reduces the winner's gain and can yield a small Elo increase for the underdog.
+- Cooldown: Ratings converge toward baseline (1000) during periods of inactivity to prevent stale ratings.
+  High ratings decay downward, low ratings recover upward. Default: 1% convergence per 90 days.
 - Match ordering: tournament.start_date asc, then event_id, then an approximate round order
   parsed from round_detail (Quarterfinal, Semifinal, Final, Consolation, etc). We default unknowns to mid-range.
 
@@ -45,6 +49,14 @@ def progress(iterable, total=None, desc: str | None = None):
 		return tqdm(iterable, total=total, desc=desc)
 	except Exception:
 		return iterable
+
+
+# Cooldown configuration
+COOLDOWN_ENABLED = True
+COOLDOWN_DAYS_THRESHOLD = 90  # Apply cooldown after 90+ days of inactivity
+COOLDOWN_RATE_PER_DAY = 0.01 / 90  # 1% convergence over 90 days = ~0.011% per day
+COOLDOWN_MIN_RATING = 800  # Don't decay below this rating
+COOLDOWN_BASELINE = 1000  # Converge towards this baseline rating
 
 
 def ensure_matches_elo_columns(conn: duckdb.DuckDBPyConnection) -> None:
@@ -74,6 +86,7 @@ def ensure_matches_elo_columns(conn: duckdb.DuckDBPyConnection) -> None:
 	add("expected_loser", "DOUBLE")
 	add("k_applied", "DOUBLE")
 	add("k_type_mult", "DOUBLE")
+	add("k_expected_mult", "DOUBLE")
 	add("k_mov_mult", "DOUBLE")
 	add("k_quick_mult", "DOUBLE")
 	add("margin", "INTEGER")
@@ -160,6 +173,7 @@ def ensure_wrestler_history_table(conn: duckdb.DuckDBPyConnection) -> None:
 			expected_score DOUBLE,
 			k_applied DOUBLE,
 			k_type_mult DOUBLE,
+			k_expected_mult DOUBLE,
 			k_mov_mult DOUBLE,
 			k_quick_mult DOUBLE,
 			decision_type TEXT,
@@ -203,6 +217,7 @@ def ensure_wrestler_history_table(conn: duckdb.DuckDBPyConnection) -> None:
 		("expected_score", "DOUBLE"),
 		("k_applied", "DOUBLE"),
 		("k_type_mult", "DOUBLE"),
+		("k_expected_mult", "DOUBLE"),
 		("k_mov_mult", "DOUBLE"),
 		("k_quick_mult", "DOUBLE"),
 		("decision_type", "TEXT"),
@@ -343,6 +358,113 @@ def k_factor(decision_type: Optional[str], decision_code: Optional[str], winner_
 	return k
 
 
+def close_loss_bonus_for_loser(
+	loser_pre: float,
+	winner_pre: float,
+	decision_type: Optional[str],
+	decision_code: Optional[str],
+	margin: Optional[int],
+) -> float:
+	"""Return a small [0, 0.25] partial credit for the losing wrestler when:
+	- The loser was the underdog (lower pre-match Elo), and
+	- The match was close (small point margin) or went to SV/OT.
+
+	This credit is applied symmetrically (winner loses same amount of actual score), preserving zero-sum Elo.
+	"""
+	dt = (decision_type or "").lower()
+	dc = (decision_code or "").upper()
+	# No bonus on falls/forfeits/defaults/tech falls
+	if ("fall" in dt) or (dc in ("FALL", "PIN", "FF", "FOR", "DEF", "TF")):
+		return 0.0
+	# Only if loser was underdog
+	gap = max(0.0, winner_pre - loser_pre)
+	if gap <= 0:
+		return 0.0
+	# Closeness factor: SV/OT -> treat as maximum closeness; else use margin if available
+	is_overtime = dc in ("SV-1", "SV1", "OT", "UTB") or ("sudden victory" in dt) or ("overtime" in dt)
+	if is_overtime:
+		close_factor = 1.0
+	elif margin is not None:
+		# Linear drop-off: margin 0-2 -> 1..0; clip to [0,1]
+		close_factor = max(0.0, min(1.0, (2.0 - float(margin)) / 2.0))
+	else:
+		close_factor = 0.0
+	if close_factor <= 0.0:
+		return 0.0
+	# Normalize rating gap to ~[0,1] over 400 Elo range
+	gap_factor = max(0.0, min(1.0, gap / 400.0))
+	# Base scale: up to 0.25 actual-score points (quite modest)
+	bonus = 0.25 * close_factor * gap_factor
+	return float(max(0.0, min(0.25, bonus)))
+
+
+def apply_cooldown(
+	current_rating: float,
+	last_match_date: Any,
+	current_date: Any,
+	baseline_rating: float = COOLDOWN_BASELINE
+) -> float:
+	"""Apply rating cooldown for periods of inactivity.
+	
+	Ratings converge toward baseline (1000) during inactivity:
+	- High ratings (>1000) decay downward toward 1000
+	- Low ratings (<1000) recover upward toward 1000
+	- Ratings at/near baseline remain stable
+	
+	Args:
+		current_rating: Current Elo rating
+		last_match_date: Date of wrestler's last match
+		current_date: Current tournament date
+		baseline_rating: Rating to converge towards (default 1000)
+		
+	Returns:
+		Adjusted rating after cooldown convergence
+	"""
+	if not COOLDOWN_ENABLED:
+		return current_rating
+		
+	if not last_match_date or not current_date:
+		return current_rating
+		
+	try:
+		# Parse dates
+		if isinstance(last_match_date, str):
+			from datetime import datetime
+			last_dt = datetime.strptime(last_match_date, '%Y-%m-%d').date()
+		else:
+			last_dt = last_match_date
+			
+		if isinstance(current_date, str):
+			from datetime import datetime
+			current_dt = datetime.strptime(current_date, '%Y-%m-%d').date()
+		else:
+			current_dt = current_date
+			
+		# Calculate days since last match
+		days_inactive = (current_dt - last_dt).days
+		
+		# Only apply cooldown after threshold
+		if days_inactive <= COOLDOWN_DAYS_THRESHOLD:
+			return current_rating
+			
+		# Calculate convergence toward baseline
+		excess_days = days_inactive - COOLDOWN_DAYS_THRESHOLD
+		convergence_factor = 1.0 - (COOLDOWN_RATE_PER_DAY * excess_days)
+		convergence_factor = max(0.0, min(1.0, convergence_factor))  # Clamp to [0,1]
+		
+		# Apply convergence toward baseline (works for both high and low ratings)
+		converged_rating = baseline_rating + (current_rating - baseline_rating) * convergence_factor
+		
+		# Respect minimum rating floor for extreme cases
+		converged_rating = max(COOLDOWN_MIN_RATING, converged_rating)
+		
+		return float(converged_rating)
+		
+	except Exception:
+		# If date parsing fails, return original rating
+		return current_rating
+
+
 def fetch_matches_ordered(conn: duckdb.DuckDBPyConnection) -> List[Tuple[Any, ...]]:
 	rows = conn.execute(
 		"""--sql
@@ -370,7 +492,7 @@ def run() -> None:
 	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 	log = logging.getLogger(__name__)
 
-	conn = duckdb.connect("output/scrape.db")
+	conn = duckdb.connect("output/trackwrestling.db")
 	ensure_matches_elo_columns(conn)
 	ensure_wrestlers_table(conn)
 	ensure_wrestler_history_table(conn)
@@ -387,6 +509,8 @@ def run() -> None:
 	rating: Dict[str, float] = {}
 	played: Dict[str, int] = {}
 	best_elo: Dict[str, float] = {}
+	best_date_map: Dict[str, Any] = {}
+	last_match_date: Dict[str, Any] = {}  # Track last match date for cooldown
 	wins: Dict[str, int] = {}
 	wins_fall: Dict[str, int] = {}
 	losses: Dict[str, int] = {}
@@ -405,8 +529,10 @@ def run() -> None:
 		os = opp_sum.get(name, 0.0)
 		oc = opp_cnt.get(name, 0)
 		oavg = (os / oc) if oc > 0 else None
+		# Use the tracked best_date when best_elo was achieved; initialize to this match date if missing
+		bdate = best_date_map.get(name, start_date)
 		return [name, rating.get(name, 1000.0), played.get(name, 0), event_id, start_date,
-				opp_name, last_adj, team, best_elo.get(name, rating.get(name, 1000.0)), start_date,
+				opp_name, last_adj, team, best_elo.get(name, rating.get(name, 1000.0)), bdate,
 				w, wf, losses_cnt, lf, dqv, os, oc, oavg]
 
 	def _vals2(name: str, team: Optional[str], opp_name: Optional[str], last_adj: float) -> list:
@@ -415,14 +541,41 @@ def run() -> None:
 
 	for (rowid, event_id, round_id, weight_class, wname, lname, d_type, d_code, rdetail, wpts, lpts, ftime, wteam, lteam, start_date) in progress(rows, total=len(rows), desc="Elo matches"):
 		seq += 1
+		# Do not initialize best_elo to baseline; only record post-match maxima
+		
+		# Apply cooldown for periods of inactivity
+		if COOLDOWN_ENABLED:
+			for name in [wname, lname]:
+				if name in rating and name in last_match_date:
+					cooled_rating = apply_cooldown(
+						rating[name], 
+						last_match_date[name], 
+						start_date
+					)
+					if cooled_rating != rating[name]:
+						log.debug(f"Cooldown applied to {name}: {rating[name]:.1f} -> {cooled_rating:.1f}")
+						rating[name] = cooled_rating
+		
 		# Initialize ratings if new
 		ra = rating.get(wname, 1000.0)
 		rb = rating.get(lname, 1000.0)
 		# Expected and K
 		ea = expected_score(ra, rb)
 		k, t_mult, m_mult, q_mult, margin, fsec = k_components(d_type, d_code, wpts, lpts, ftime)
+		# Dampening multiplier based on how expected the outcome is (winner expected -> reduce K)
+		# Use symmetric multiplier for both sides to preserve zero-sum.
+		# When ea is high (>0.75), reduce K up to ~50%; when ea ~0.5, no reduction; when ea low (<0.25), slight boost up to ~10%.
+		k_expected_mult = 1.0
+		if ea >= 0.75:
+			# Linear from 0.75..1.00 -> 1.0..0.5
+			k_expected_mult = max(0.5, 1.0 - 2.0 * (ea - 0.75))
+		elif ea <= 0.25:
+			# Linear from 0.25..0.0 -> 1.0..1.10 (small boost)
+			k_expected_mult = min(1.10, 1.0 + 0.4 * (0.25 - ea))
+		# Apply expected multiplier
+		k_adj = k * k_expected_mult
 		rd_order = round_sort_key(rdetail)
-		if k <= 0.0:
+		if k_adj <= 0.0:
 			# No change (bye or ignored)
 			conn.execute(
 				"""--sql
@@ -432,13 +585,13 @@ def run() -> None:
 								   elo_sequence = ?,
 								   winner_elo_before = ?, loser_elo_before = ?,
 								   expected_winner = ?, expected_loser = ?,
-								   k_applied = ?, k_type_mult = ?, k_mov_mult = ?, k_quick_mult = ?,
+								 k_applied = ?, k_type_mult = ?, k_expected_mult = ?, k_mov_mult = ?, k_quick_mult = ?,
 								   margin = ?, fall_seconds = ?, round_order = ?,
 								   winner_prev_matches = ?, loser_prev_matches = ?
 				WHERE rowid = ?
 				""",
 				[ra, 0.0, rb, 0.0,
-				 seq, ra, rb, ea, 1.0 - ea, k, t_mult, m_mult, q_mult,
+				 seq, ra, rb, ea, 1.0 - ea, k_adj, t_mult, k_expected_mult, m_mult, q_mult,
 				 margin if margin is not None else None, fsec if fsec is not None else None, rd_order,
 				 played.get(wname, 0), played.get(lname, 0),
 				 rowid],
@@ -450,12 +603,17 @@ def run() -> None:
 			played[lname] = lp
 			rating[wname] = ra
 			rating[lname] = rb
-			prev_best_w = best_elo.get(wname, 1000.0)
-			prev_best_l = best_elo.get(lname, 1000.0)
+			# Update last match dates for bye tracking
+			last_match_date[wname] = start_date
+			last_match_date[lname] = start_date
+			prev_best_w = best_elo.get(wname, float("-inf"))
+			prev_best_l = best_elo.get(lname, float("-inf"))
 			if ra > prev_best_w:
 				best_elo[wname] = ra
+				best_date_map[wname] = start_date
 			if rb > prev_best_l:
 				best_elo[lname] = rb
+				best_date_map[lname] = start_date
 			# Persist wrestlers (winner and loser); avoid aliasing target table in ON CONFLICT
 			conn.execute(
 				"""--sql
@@ -472,8 +630,8 @@ def run() -> None:
 					last_opponent_name = EXCLUDED.last_opponent_name,
 					last_adjustment = EXCLUDED.last_adjustment,
 					last_team = EXCLUDED.last_team,
-					best_elo = GREATEST(COALESCE(best_elo, EXCLUDED.best_elo), EXCLUDED.best_elo),
-					best_date = CASE WHEN EXCLUDED.best_elo >= COALESCE(best_elo, EXCLUDED.best_elo) THEN EXCLUDED.best_date ELSE best_date END,
+					best_elo = EXCLUDED.best_elo,
+					best_date = EXCLUDED.best_date,
 					wins = EXCLUDED.wins,
 					wins_fall = EXCLUDED.wins_fall,
 					losses = EXCLUDED.losses,
@@ -500,8 +658,8 @@ def run() -> None:
 					last_opponent_name = EXCLUDED.last_opponent_name,
 					last_adjustment = EXCLUDED.last_adjustment,
 					last_team = EXCLUDED.last_team,
-					best_elo = GREATEST(COALESCE(best_elo, EXCLUDED.best_elo), EXCLUDED.best_elo),
-					best_date = CASE WHEN EXCLUDED.best_elo >= COALESCE(best_elo, EXCLUDED.best_elo) THEN EXCLUDED.best_date ELSE best_date END,
+					best_elo = EXCLUDED.best_elo,
+					best_date = EXCLUDED.best_date,
 					wins = EXCLUDED.wins,
 					wins_fall = EXCLUDED.wins_fall,
 					losses = EXCLUDED.losses,
@@ -519,14 +677,14 @@ def run() -> None:
 				INSERT INTO wrestler_history (
 					match_rowid, role, name, team, event_id, round_id, weight_class, start_date,
 						opponent_name, opponent_team, opponent_pre_elo, opponent_post_elo, pre_elo, post_elo, adjustment, expected_score,
-					k_applied, k_type_mult, k_mov_mult, k_quick_mult,
+					k_applied, k_type_mult, k_expected_mult, k_mov_mult, k_quick_mult,
 					decision_type, decision_type_code, margin, fall_seconds,
 					round_detail, round_order, bye, elo_sequence
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				""",
 					[rowid, 'W', wname, wteam, event_id, round_id, weight_class, start_date,
 						lname, lteam, rb, rb, ra, ra, 0.0, ea,
-					k, t_mult, m_mult, q_mult,
+					 k_adj, t_mult, k_expected_mult, m_mult, q_mult,
 					d_type, d_code, margin if margin is not None else None, fsec if fsec is not None else None,
 					rdetail, rd_order, True, seq]
 			)
@@ -535,21 +693,38 @@ def run() -> None:
 					INSERT INTO wrestler_history (
 					match_rowid, role, name, team, event_id, round_id, weight_class, start_date,
 						opponent_name, opponent_team, opponent_pre_elo, opponent_post_elo, pre_elo, post_elo, adjustment, expected_score,
-					k_applied, k_type_mult, k_mov_mult, k_quick_mult,
+					k_applied, k_type_mult, k_expected_mult, k_mov_mult, k_quick_mult,
 					decision_type, decision_type_code, margin, fall_seconds,
 					round_detail, round_order, bye, elo_sequence
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				""",
 					[rowid, 'L', lname, lteam, event_id, round_id, weight_class, start_date,
 						wname, wteam, ra, ra, rb, rb, 0.0, 1.0 - ea,
-					k, t_mult, m_mult, q_mult,
+					k_adj, t_mult, k_expected_mult, m_mult, q_mult,
 					d_type, d_code, margin if margin is not None else None, fsec if fsec is not None else None,
 					rdetail, rd_order, True, seq]
 			)
 			continue
-		# Winner scored 1, loser 0
-		delta_a = k * (1.0 - ea)
-		delta_b = -delta_a
+		# Winner scored 1, loser 0, with optional close-loss credit to the underdog loser.
+		# Compute margin and possible bonus for the loser
+		# Note: margin was computed in k_components; recompute here to avoid refactor coupling
+		margin_val = None
+		if wpts is not None and lpts is not None:
+			try:
+				margin_val = max(0, int(wpts) - int(lpts))
+			except Exception:
+				margin_val = None
+		bonus = close_loss_bonus_for_loser(
+			loser_pre=rb,
+			winner_pre=ra,
+			decision_type=d_type,
+			decision_code=d_code,
+			margin=margin_val,
+		)
+		s_w = 1.0 - bonus
+		s_l = 0.0 + bonus
+		delta_a = k_adj * (s_w - ea)
+		delta_b = k_adj * (s_l - (1.0 - ea))
 		ra2 = ra + delta_a
 		rb2 = rb + delta_b
 		# Update map
@@ -557,6 +732,9 @@ def run() -> None:
 		rating[lname] = rb2
 		played[wname] = played.get(wname, 0) + 1
 		played[lname] = played.get(lname, 0) + 1
+		# Update last match dates for cooldown tracking
+		last_match_date[wname] = start_date
+		last_match_date[lname] = start_date
 		# Winner/loser summaries
 		is_fall_win = ("fall" in (d_type or "").lower()) or (d_code or "").upper() in ("FALL", "PIN")
 		is_fall_loss = is_fall_win  # same event implies fall for both
@@ -575,10 +753,12 @@ def run() -> None:
 		opp_cnt[wname] = opp_cnt.get(wname, 0) + 1
 		opp_sum[lname] = opp_sum.get(lname, 0.0) + ra
 		opp_cnt[lname] = opp_cnt.get(lname, 0) + 1
-		if ra2 > best_elo.get(wname, 1000.0):
+		if ra2 > best_elo.get(wname, float("-inf")):
 			best_elo[wname] = ra2
-		if rb2 > best_elo.get(lname, 1000.0):
+			best_date_map[wname] = start_date
+		if rb2 > best_elo.get(lname, float("-inf")):
 			best_elo[lname] = rb2
+			best_date_map[lname] = start_date
 		# Persist per-match
 		conn.execute(
 			"""--sql
@@ -588,13 +768,13 @@ def run() -> None:
 							   elo_sequence = ?,
 							   winner_elo_before = ?, loser_elo_before = ?,
 							   expected_winner = ?, expected_loser = ?,
-							   k_applied = ?, k_type_mult = ?, k_mov_mult = ?, k_quick_mult = ?,
+						 k_applied = ?, k_type_mult = ?, k_expected_mult = ?, k_mov_mult = ?, k_quick_mult = ?,
 							   margin = ?, fall_seconds = ?, round_order = ?,
 							   winner_prev_matches = ?, loser_prev_matches = ?
 			WHERE rowid = ?
 			""",
 			[ra2, delta_a, rb2, delta_b,
-			 seq, ra, rb, ea, 1.0 - ea, k, t_mult, m_mult, q_mult,
+			 seq, ra, rb, ea, 1.0 - ea, k_adj, t_mult, k_expected_mult, m_mult, q_mult,
 			 margin if margin is not None else None, fsec if fsec is not None else None, rd_order,
 			 played.get(wname, 0) - 1, played.get(lname, 0) - 1,
 			 rowid],
@@ -618,8 +798,8 @@ def run() -> None:
 				last_opponent_name = EXCLUDED.last_opponent_name,
 				last_adjustment = EXCLUDED.last_adjustment,
 				last_team = EXCLUDED.last_team,
-				best_elo = GREATEST(COALESCE(best_elo, EXCLUDED.best_elo), EXCLUDED.best_elo),
-				best_date = CASE WHEN EXCLUDED.best_elo >= COALESCE(best_elo, EXCLUDED.best_elo) THEN EXCLUDED.best_date ELSE best_date END,
+				best_elo = EXCLUDED.best_elo,
+				best_date = EXCLUDED.best_date,
 				wins = EXCLUDED.wins,
 				wins_fall = EXCLUDED.wins_fall,
 				losses = EXCLUDED.losses,
@@ -650,8 +830,8 @@ def run() -> None:
 				last_opponent_name = EXCLUDED.last_opponent_name,
 				last_adjustment = EXCLUDED.last_adjustment,
 				last_team = EXCLUDED.last_team,
-				best_elo = GREATEST(COALESCE(best_elo, EXCLUDED.best_elo), EXCLUDED.best_elo),
-				best_date = CASE WHEN EXCLUDED.best_elo >= COALESCE(best_elo, EXCLUDED.best_elo) THEN EXCLUDED.best_date ELSE best_date END,
+				best_elo = EXCLUDED.best_elo,
+				best_date = EXCLUDED.best_date,
 				wins = EXCLUDED.wins,
 				wins_fall = EXCLUDED.wins_fall,
 				losses = EXCLUDED.losses,
@@ -668,15 +848,15 @@ def run() -> None:
 			"""--sql
 			INSERT INTO wrestler_history (
 				match_rowid, role, name, team, event_id, round_id, weight_class, start_date,
-				opponent_name, opponent_team, opponent_pre_elo, opponent_post_elo, pre_elo, post_elo, adjustment, expected_score,
-				k_applied, k_type_mult, k_mov_mult, k_quick_mult,
+					opponent_name, opponent_team, opponent_pre_elo, opponent_post_elo, pre_elo, post_elo, adjustment, expected_score,
+				k_applied, k_type_mult, k_expected_mult, k_mov_mult, k_quick_mult,
 				decision_type, decision_type_code, margin, fall_seconds,
 				round_detail, round_order, bye, elo_sequence
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			""",
 			[rowid, 'W', wname, wteam, event_id, round_id, weight_class, start_date,
 				lname, lteam, rb, rb2, ra, ra2, float(delta_a), ea,
-				k, t_mult, m_mult, q_mult,
+				 k_adj, t_mult, k_expected_mult, m_mult, q_mult,
 				d_type, d_code, margin if margin is not None else None, fsec if fsec is not None else None,
 				rdetail, rd_order, False, seq]
 		)
@@ -684,15 +864,15 @@ def run() -> None:
 			"""--sql
 			INSERT INTO wrestler_history (
 				match_rowid, role, name, team, event_id, round_id, weight_class, start_date,
-				opponent_name, opponent_team, opponent_pre_elo, opponent_post_elo, pre_elo, post_elo, adjustment, expected_score,
-				k_applied, k_type_mult, k_mov_mult, k_quick_mult,
+					opponent_name, opponent_team, opponent_pre_elo, opponent_post_elo, pre_elo, post_elo, adjustment, expected_score,
+				k_applied, k_type_mult, k_expected_mult, k_mov_mult, k_quick_mult,
 				decision_type, decision_type_code, margin, fall_seconds,
 				round_detail, round_order, bye, elo_sequence
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			""",
 			[rowid, 'L', lname, lteam, event_id, round_id, weight_class, start_date,
 				wname, wteam, ra, ra2, rb, rb2, float(delta_b), 1.0 - ea,
-				k, t_mult, m_mult, q_mult,
+				k_adj, t_mult, k_expected_mult, m_mult, q_mult,
 				d_type, d_code, margin if margin is not None else None, fsec if fsec is not None else None,
 				rdetail, rd_order, False, seq]
 		)

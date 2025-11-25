@@ -255,7 +255,7 @@ def run_scraper(args: argparse.Namespace) -> None:
 	out_root.mkdir(parents=True, exist_ok=True)
 
 	# Open local DuckDB file next to outputs
-	db_path = Path("output") / "scrape.db"
+	db_path = Path("output") / "trackwrestling.db"
 	db_path.parent.mkdir(parents=True, exist_ok=True)
 	conn = duckdb.connect(str(db_path))
 	ensure_db(conn)
