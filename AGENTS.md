@@ -18,3 +18,8 @@ sql_query = """--sql
 SELECT * FROM my_table WHERE condition = true;
 """
 ```
+
+## DBML for database schema documentation
+
+This project utilizes the Database Markup Language DBML format for documenting database tables and
+relationships. Any updates to data tables, column names, etc., should be updated in the .dbml file.

@@ -100,7 +100,7 @@ def run_scraper(args: argparse.Namespace) -> None:
     logger = logging.getLogger(__name__)
 
     # DB
-    db_path = Path("output") / "scrape.db"
+    db_path = Path("output") / "trackwrestling.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect(str(db_path))
     ensure_db(conn)

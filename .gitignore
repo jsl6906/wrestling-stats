@@ -13,3 +13,6 @@ wheels/
 output/
 Raw Results/
 raw_results/
+
+# IDE Settings
+.vscode/

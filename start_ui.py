@@ -8,7 +8,7 @@ import os
 
 
 def main():
-    db_path = "output/scrape.db"
+    db_path = "output/trackwrestling.db"
     
     # Check if database exists
     if not os.path.exists(db_path):

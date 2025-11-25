@@ -189,11 +189,15 @@ NAME_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     (r"\bKeyvon\s*\(\s*kj\s*\)\s*Riley\b", "Keyvon Riley"),
     # Normalize Blaise McNeil variants (McNeil/McNeill/Mcneil) to 'Blaise McNeil'
     (r"\bBlaise\s+McNeil{1,2}\b", "Blaise McNeil"),
+    # Normalize Mateo/Matteo Corsini variants to 'Mateo Corsini'
+    (r"\bMat{1,2}eo\s+Corsini\b", "Mateo Corsini"),
+    # Remove any digits present in names (e.g., 'John 2 Doe' -> 'John Doe')
+    (r"\d+", ""),
 ]
 
 TEAM_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     (r"\bAlexandria\s+Junior\s+Titans\b", "Alexandria"),
-    (r"\bAnnandale\s+Mat\s+Rats\b", "Annendale"),
+    (r"\bAnnandale\s+Mat\s+Rats\b", "Annandale"),
     (r"\bBraddock\s+Wrestling\s+Club\b", "Braddock"),
     (r"\bE9\s*Wrestling\b|\bE9Wrestling\b", "E9 Wrestling"),
     (r"\bFauquier\s+Wrestling\b", "Fauquier"),
@@ -234,7 +238,11 @@ def _apply_conversions(value: Optional[str], conversions: List[Tuple[re.Pattern[
 
 
 def _normalize_person_name(name: Optional[str]) -> Optional[str]:
-    return _apply_conversions(name, NAME_CONVERSIONS)
+    out = _apply_conversions(name, NAME_CONVERSIONS)
+    if out is None:
+        return out
+    # Collapse multiple spaces created by removals
+    return " ".join(out.split())
 
 
 def _normalize_team_name(team: Optional[str]) -> Optional[str]:
@@ -343,7 +351,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
                 out["loser_points"] = int(lp)
             except Exception:
                 pass
-    return _apply_name_team_conversions(out)
+        return _apply_name_team_conversions(out)
 
     # Normal or fall cases
     # Winner (Team) won by <decision_type> over Loser (Team) <CODE> <score|time>
@@ -372,7 +380,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
                 out["loser_points"] = int(lp)
             except Exception:
                 pass
-    return _apply_name_team_conversions(out)
+        return _apply_name_team_conversions(out)
 
     # Variant: Winner (Team) won over Loser (Team) <CODE> <score|time>
     # Some entries omit the explicit decision phrase; we still capture code and numbers.
@@ -413,7 +421,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
                 out["loser_points"] = int(lp)
             except Exception:
                 pass
-    return _apply_name_team_conversions(out)
+        return _apply_name_team_conversions(out)
 
     # Fallback minimal parse without code/score
     m2 = _re.search(r"^(?P<win>.+) \((?P<wteam>[^)]*)\)\s+won by\s+(?P<dtype>.+?)\s+over\s+(?P<lose>.+) \((?P<lteam>[^)]*)\)", rest, _re.I)
@@ -432,7 +440,7 @@ def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger = logging.getLogger(__name__)
 
-    conn = duckdb.connect("output/scrape.db")
+    conn = duckdb.connect("output/trackwrestling.db")
     ensure_schema(conn)
 
     rows = fetch_unparsed_round_html(conn)
