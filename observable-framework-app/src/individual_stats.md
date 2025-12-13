@@ -38,12 +38,32 @@ const initialWrestlerFromUrl = getUrlParam('wrestler');
 ```
 
 ```js
-// Helper function to create wrestler links
+// Helper function to format wrestler names as "Last, First M"
+function formatWrestlerName(name) {
+  if (!name || typeof name !== 'string') return name || "-";
+  
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) {
+    return parts[0]; // Single name, return as is
+  } else if (parts.length === 2) {
+    // First Last -> Last, First
+    return `${parts[1]}, ${parts[0]}`;
+  } else {
+    // First Middle Last or First M Last -> Last, First M
+    const firstName = parts[0];
+    const lastName = parts[parts.length - 1];
+    const middle = parts.slice(1, -1).join(' ');
+    return `${lastName}, ${firstName}${middle ? ' ' + middle : ''}`;
+  }
+}
+
+// Helper function to create wrestler links with formatted names
 function createWrestlerLink(wrestlerName) {
   if (!wrestlerName) return wrestlerName || "-";
   const url = new URL(window.location);
   url.searchParams.set('wrestler', wrestlerName);
-  return `<a href="${url.href}" target="_blank" rel="noopener noreferrer">${wrestlerName}</a>`;
+  const displayName = formatWrestlerName(wrestlerName);
+  return `<a href="${url.href}" target="_blank" rel="noopener noreferrer">${displayName}</a>`;
 }
 ```
 
@@ -133,7 +153,12 @@ const names = Array.from(new Set(
   Array.from(nameToTeam.entries())
     .filter(([name, team]) => teamFilter === "All teams" || team === teamFilter)
     .map(([name]) => name)
-)).sort((a, b) => String(a).localeCompare(String(b)));
+)).sort((a, b) => {
+  // Sort by formatted name (Last, First M)
+  const formattedA = formatWrestlerName(a);
+  const formattedB = formatWrestlerName(b);
+  return String(formattedA).localeCompare(String(formattedB));
+});
 ```
 
 ```js
@@ -148,10 +173,24 @@ const wrestler = (() => {
     (prevForTeam && names.includes(prevForTeam)) ? prevForTeam :
     (prevGlobal && names.includes(prevGlobal)) ? prevGlobal :
     null; // Default to no selection
-  const options = ["Select a wrestler...", ...names];
-  const control = select(options, {label: "Wrestler", value: initial || "Select a wrestler..."});
+  // Create formatted name map and options array
+  const nameDisplayMap = new Map();
+  const formattedOptions = names.map(name => {
+    const formatted = formatWrestlerName(name);
+    nameDisplayMap.set(formatted, name);
+    return formatted;
+  });
+  
+  const options = ["Select a wrestler...", ...formattedOptions];
+  const control = select(options, {label: "Wrestler", value: initial ? formatWrestlerName(initial) : "Select a wrestler..."});
+  
+  // Convert display value back to original name for persistence
+  const getOriginalName = (displayValue) => {
+    if (displayValue === "Select a wrestler...") return null;
+    return nameDisplayMap.get(displayValue) || displayValue;
+  };
   // Ensure control reflects initial pick even if Inputs reuses DOM
-  control.value = initial || "Select a wrestler...";
+  control.value = initial ? formatWrestlerName(initial) : "Select a wrestler...";
   // Persist initial selection immediately (only if not the placeholder)
   if (initial && initial !== "Select a wrestler...") {
     globalThis.__wrestlerSelected = initial;
@@ -159,11 +198,12 @@ const wrestler = (() => {
     setUrlParam('wrestler', initial);
   }
   const persist = () => {
-    const v = control.value;
-    if (v !== "Select a wrestler...") {
-      globalThis.__wrestlerSelected = v;
-      cache[teamKey] = v;
-      setUrlParam('wrestler', v);
+    const displayValue = control.value;
+    const originalName = getOriginalName(displayValue);
+    if (originalName) {
+      globalThis.__wrestlerSelected = originalName;
+      cache[teamKey] = originalName;
+      setUrlParam('wrestler', originalName);
     } else {
       globalThis.__wrestlerSelected = null;
       delete cache[teamKey];
@@ -182,9 +222,16 @@ const activeWrestler = (() => {
   if (!wrestler || wrestler === "Select a wrestler...") {
     return null; // No wrestler selected
   }
-  const selected = names.includes(wrestler) ? wrestler : null;
+  // Convert display name back to original name for data lookup
+  const displayValue = wrestler;
+  const nameDisplayMap = new Map();
+  names.forEach(name => {
+    nameDisplayMap.set(formatWrestlerName(name), name);
+  });
+  const originalName = nameDisplayMap.get(displayValue) || displayValue;
+  const selected = names.includes(originalName) ? originalName : null;
   // Update URL if we had to fall back to no wrestler
-  if (selected !== wrestler) {
+  if (selected !== originalName) {
     setUrlParam('wrestler', selected);
   }
   return selected;
@@ -244,7 +291,7 @@ const activeWrestler = (() => {
   const tableRows = generalPart + eloHeader + eloPart;
   return wrap(`
     <div>
-      <h3>${w.name}</h3>
+      <h3>${formatWrestlerName(w.name)}</h3>
       <table>
         ${tableRows}
       </table>
@@ -270,7 +317,7 @@ const activeWrestler = (() => {
   
   const rowsFor = elo_history.filter(d => d.name === activeWrestler);
   if (!rowsFor.length) {
-    return wrap(`<div class="empty-state"><h3>No opponent data available</h3><p>No match history found for ${activeWrestler}.</p></div>`);
+    return wrap(`<div class="empty-state"><h3>No opponent data available</h3><p>No match history found for ${formatWrestlerName(activeWrestler)}.</p></div>`);
   }
   
   // Group matches by opponent
@@ -352,10 +399,16 @@ const activeWrestler = (() => {
         bVal = bVal ? bVal.getTime() : 0;
       }
       
-      // Handle string sorting (case insensitive)
+      // Handle string sorting (case insensitive) and name column sorting with formatting
       if (typeof aVal === 'string') {
-        aVal = aVal.toLowerCase();
-        bVal = bVal.toLowerCase();
+        if (column === 'name') {
+          // For name column, sort by formatted names
+          aVal = formatWrestlerName(aVal).toLowerCase();
+          bVal = formatWrestlerName(bVal).toLowerCase();
+        } else {
+          aVal = aVal.toLowerCase();
+          bVal = bVal.toLowerCase();
+        }
       }
       
       let comparison;
@@ -364,8 +417,8 @@ const activeWrestler = (() => {
       } else if (aVal > bVal) {
         comparison = 1;
       } else {
-        // Fallback to name for stable sort
-        comparison = a.name.localeCompare(b.name);
+        // Fallback to formatted name for stable sort
+        comparison = formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
       }
       
       return direction === 'desc' ? -comparison : comparison;
@@ -507,7 +560,7 @@ const series = !activeWrestler ? [] : elo_history
   height: 420,
   marginLeft: 48,
   x: {axis: null},
-  y: {label: `Elo (${activeWrestler})`, grid: true},
+  y: {label: `Elo (${formatWrestlerName(activeWrestler)})`, grid: true},
   marks: [
   Plot.line(series, {x: "seq", y: "post_elo", curve: "step-after"}),
     Plot.dot(series, {
@@ -516,7 +569,7 @@ const series = !activeWrestler ? [] : elo_history
       tip: true,
       title: d => {
         const ds = d.date ? d.date.toLocaleDateString?.() ?? String(d.date) : "";
-        return `${activeWrestler}\n${d.tournament} — ${d.round}\nvs ${d.opponent}\nDate: ${ds}\nElo: ${Math.round(d.post_elo)}`
+        return `${formatWrestlerName(activeWrestler)}\n${d.tournament} — ${d.round}\nvs ${formatWrestlerName(d.opponent)}\nDate: ${ds}\nElo: ${Math.round(d.post_elo)}`
       }
     })
   ]
@@ -571,7 +624,7 @@ const opponentSeries = (() => {
   if (displayScope === 'Opponents') {
     // When showing only opponents, all data should be styled as opponents
     return allWrestlerData.sort((a, b) => {
-      const n = String(a.name).localeCompare(String(b.name));
+      const n = formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
       return n !== 0 ? n : (a.seq - b.seq);
     });
   } else {
@@ -579,7 +632,7 @@ const opponentSeries = (() => {
     return allWrestlerData
       .filter(d => opponentNames.has(d.name))
       .sort((a, b) => {
-        const n = String(a.name).localeCompare(String(b.name));
+        const n = formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
         return n !== 0 ? n : (a.seq - b.seq);
       });
   }
@@ -594,7 +647,7 @@ const nonOpponentSeries = (() => {
     return allWrestlerData
       .filter(d => !opponentNames.has(d.name))
       .sort((a, b) => {
-        const n = String(a.name).localeCompare(String(b.name));
+        const n = formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
         return n !== 0 ? n : (a.seq - b.seq);
       });
   }
@@ -630,7 +683,7 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
             title: d => {
               const url = new URL(window.location);
               url.searchParams.set('wrestler', d.name);
-              return `${d.name}\nClick to view: ${url.href}`;
+              return `${formatWrestlerName(d.name)}\nClick to view: ${url.href}`;
             }
           }),
           // Highlighted: opponent wrestlers or all wrestlers in opponents-only view
@@ -647,7 +700,7 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
               const url = new URL(window.location);
               url.searchParams.set('wrestler', d.name);
               const suffix = displayScope === 'Opponents' ? '' : ' (opponent)';
-              return `${d.name}${suffix}\nClick to view: ${url.href}`;
+              return `${formatWrestlerName(d.name)}${suffix}\nClick to view: ${url.href}`;
             }
           }),
           // Halo for selected wrestler line (drawn after background, before foreground)
@@ -674,7 +727,7 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
                 Plot.text([selectedEnd], {
                   x: "seq",
                   y: "post_elo",
-                  text: () => activeWrestler,
+                  text: () => formatWrestlerName(activeWrestler),
                   dx: -8,
                   textAnchor: "end",
                   fill: "steelblue",
