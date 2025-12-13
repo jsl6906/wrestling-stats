@@ -86,19 +86,28 @@ const wrestler = (() => {
     (initialWrestlerFromUrl && names.includes(initialWrestlerFromUrl)) ? initialWrestlerFromUrl :
     (prevForTeam && names.includes(prevForTeam)) ? prevForTeam :
     (prevGlobal && names.includes(prevGlobal)) ? prevGlobal :
-    names[0];
-  const control = select(names, {label: "Wrestler", value: initial});
+    null; // Default to no selection
+  const options = ["Select a wrestler...", ...names];
+  const control = select(options, {label: "Wrestler", value: initial || "Select a wrestler..."});
   // Ensure control reflects initial pick even if Inputs reuses DOM
-  control.value = initial;
-  // Persist initial selection immediately
-  globalThis.__wrestlerSelected = initial;
-  cache[teamKey] = initial;
-  setUrlParam('wrestler', initial);
+  control.value = initial || "Select a wrestler...";
+  // Persist initial selection immediately (only if not the placeholder)
+  if (initial && initial !== "Select a wrestler...") {
+    globalThis.__wrestlerSelected = initial;
+    cache[teamKey] = initial;
+    setUrlParam('wrestler', initial);
+  }
   const persist = () => {
     const v = control.value;
-    globalThis.__wrestlerSelected = v;
-    cache[teamKey] = v;
-    setUrlParam('wrestler', v);
+    if (v !== "Select a wrestler...") {
+      globalThis.__wrestlerSelected = v;
+      cache[teamKey] = v;
+      setUrlParam('wrestler', v);
+    } else {
+      globalThis.__wrestlerSelected = null;
+      delete cache[teamKey];
+      setUrlParam('wrestler', null);
+    }
   };
   control.addEventListener("input", persist);
   control.addEventListener("change", persist);
@@ -109,8 +118,11 @@ const wrestler = (() => {
 ```js
 // Ensure a valid selection if team filter changes
 const activeWrestler = (() => {
-  const selected = names.includes(wrestler) ? wrestler : names[0];
-  // Update URL if we had to fall back to a different wrestler
+  if (!wrestler || wrestler === "Select a wrestler...") {
+    return null; // No wrestler selected
+  }
+  const selected = names.includes(wrestler) ? wrestler : null;
+  // Update URL if we had to fall back to no wrestler
   if (selected !== wrestler) {
     setUrlParam('wrestler', selected);
   }
@@ -121,15 +133,20 @@ const activeWrestler = (() => {
 ```js
 // Selected wrestler summary card (DOM)
 (() => {
-  const w = Array.isArray(wrestlers) ? wrestlers.find(d => d.name === activeWrestler) : null;
-  const fmt = (n) => Number.isFinite(+n) ? Math.round(+n) : "-";
-  const fmt1 = (n) => Number.isFinite(+n) ? (+n).toFixed(1) : "-";
-  const dateStr = (v) => v ? (new Date(v)).toLocaleDateString?.() ?? String(v) : "-";
   const wrap = (html) => {
     const div = document.createElement("div");
     div.innerHTML = html.trim();
     return div.firstChild || div;
   };
+  
+  if (!activeWrestler) {
+    return wrap(`<div class="empty-state"><h3>Select a wrestler to view statistics</h3><p>Choose a wrestler from the dropdown above to see their detailed statistics, match history, and performance charts.</p></div>`);
+  }
+  
+  const w = Array.isArray(wrestlers) ? wrestlers.find(d => d.name === activeWrestler) : null;
+  const fmt = (n) => Number.isFinite(+n) ? Math.round(+n) : "-";
+  const fmt1 = (n) => Number.isFinite(+n) ? (+n).toFixed(1) : "-";
+  const dateStr = (v) => v ? (new Date(v)).toLocaleDateString?.() ?? String(v) : "-";
   if (!w) return wrap(`<p>No summary available.</p>`);
   // Fallback derivations if wrestlers.parquet is missing some fields
   const rowsFor = elo_history.filter(d => d.name === activeWrestler);
@@ -150,7 +167,7 @@ const activeWrestler = (() => {
   const win_pct = denom > 0 ? (wins / denom) * 100 : null;
   // Arrange: Team at top; general stats next; Elo-related grouped at bottom
   const generalRows = [
-    ["Team", w.last_team ?? "-"],
+    ["Current Team", w.last_team ?? "-"],
     ["Matches", w.matches_played ?? 0],
     ["Wins", wins],
     ["Wins (Fall)", wins_fall],
@@ -165,10 +182,10 @@ const activeWrestler = (() => {
     ["Best Elo", fmt(w.best_elo)],
     ["Best Date", dateStr(w.best_date)],
     ["Opp. Avg Elo", opponent_avg_elo == null ? '-' : fmt1(opponent_avg_elo)],
-    ["Last Adj", fmt(w.last_adjustment)]
+    ["Last Elo Adj", fmt(w.last_adjustment)]
   ];
   const generalPart = generalRows.map(([k,v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
-  const eloHeader = `<tr><th colspan="2">Elo</th></tr>`;
+  const eloHeader = `<tr><th colspan="2" style="font-weight: bold; text-align: left; padding: 3px; border-top: 1px solid; border-bottom: 1px solid;">Elo Rating Stats <a href="#what-is-elo-rating"> What is Elo Rating?</a></th></tr>`;
   const eloPart = eloRows.map(([k,v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
   const tableRows = generalPart + eloHeader + eloPart;
   return wrap(`
@@ -185,8 +202,20 @@ const activeWrestler = (() => {
 ```js
 // Opponent summary table
 (() => {
+  const wrap = (html) => {
+    const div = document.createElement("div");
+    div.innerHTML = html.trim();
+    return div.firstChild || div;
+  };
+  
+  if (!activeWrestler) {
+    return wrap(`<div class="empty-state"><h3>Select a wrestler to view opponent statistics</h3><p>Choose a wrestler from the dropdown above to see their head-to-head records against other wrestlers.</p></div>`);
+  }
+  
   const rowsFor = elo_history.filter(d => d.name === activeWrestler);
-  if (!rowsFor.length) return null;
+  if (!rowsFor.length) {
+    return wrap(`<div class="empty-state"><h3>No opponent data available</h3><p>No match history found for ${activeWrestler}.</p></div>`);
+  }
   
   // Group matches by opponent
   const opponentStats = new Map();
@@ -262,12 +291,6 @@ const activeWrestler = (() => {
     </tr>
   `).join("");
   
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
   return wrap(`
     <div>
       <h3>Opponent Statistics</h3>
@@ -325,7 +348,7 @@ function toNum(v) {
 
 ```js
 // Series for selected wrestler, ordered chronologically
-const series = elo_history
+const series = !activeWrestler ? [] : elo_history
   .filter(d => d.name === activeWrestler)
   .map(d => ({
     date: parseDate(d.start_date_iso ?? d.start_date),
@@ -344,7 +367,7 @@ const series = elo_history
 ### Elo Ratings Over Time ([What is Elo rating?](#what-is-elo-rating))
 ```js
 // Line chart of Elo over time for the selected wrestler
-Plot.plot({
+!activeWrestler ? "Select a wrestler to view their Elo rating history." : Plot.plot({
   width: 900,
   height: 420,
   marginLeft: 48,
@@ -366,12 +389,6 @@ Plot.plot({
 ```
 
 ```js
-// Optional: show a small table of the last 10 matches
-display(wrestlers.find(d => d.name === activeWrestler))
-display(series)
-```
-
-```js
 // Dynamic comparison heading
 (() => {
   const h = document.createElement("h2");
@@ -382,7 +399,7 @@ display(series)
 
 ```js
 // Get list of opponents for the selected wrestler
-const opponentNames = new Set(
+const opponentNames = !activeWrestler ? new Set() : new Set(
   elo_history
     .filter(d => d.name === activeWrestler && d.opponent_name)
     .map(d => d.opponent_name)
@@ -391,7 +408,7 @@ const opponentNames = new Set(
 
 ```js
 // Prepare overlay data: separate opponents from non-opponents for different styling
-const allWrestlerData = elo_history
+const allWrestlerData = !activeWrestler ? [] : elo_history
   .map(d => ({ name: d.name, seq: toNum(d.elo_sequence), post_elo: toNum(d.post_elo) }))
   .filter(d => d.name && Number.isFinite(d.seq) && Number.isFinite(d.post_elo))
   .filter(d => teamFilter === "All teams" || (nameToTeam.get(d.name) ?? null) === teamFilter)
@@ -420,7 +437,7 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
 
 ```js
 // Render overlay chart (guard against empty data)
-(opponentSeries.length || nonOpponentSeries.length || series.length)
+!activeWrestler ? "Select a wrestler to view comparison with other wrestlers." : (opponentSeries.length || nonOpponentSeries.length || series.length)
   ? (() => {
       const chart = Plot.plot({
         width: 900,
@@ -516,3 +533,9 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
 ## What is Elo rating?
 
 The Elo rating system is a method for calculating the relative skill levels of players in competitive games, famously used in chess. It assigns a numerical rating that is updated after every match based on the outcome and the difference in the players' ratings. If a higher-rated player wins as expected, they gain only a few points, but if a lower-rated player wins an upset, they earn a significant rating boost. The system is self-correcting over time, rewarding better-than-expected performance with rating increases and penalizing underperformance with decreases, providing an objective measure of a player's relative strength.
+
+```js
+// For debugging
+//display(wrestlers.find(d => d.name === activeWrestler))
+//display(series)
+```
