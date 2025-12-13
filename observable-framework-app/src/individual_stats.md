@@ -191,7 +191,7 @@ const activeWrestler = (() => {
 })();
 ```
 
-## Wrestler Details
+## Wrestler Statistics
 
 ```js
 // Selected wrestler summary card (DOM)
@@ -211,21 +211,12 @@ const activeWrestler = (() => {
   const fmt1 = (n) => Number.isFinite(+n) ? (+n).toFixed(1) : "-";
   const dateStr = (v) => v ? (new Date(v)).toLocaleDateString?.() ?? String(v) : "-";
   if (!w) return wrap(`<p>No summary available.</p>`);
-  // Fallback derivations if wrestlers.parquet is missing some fields
-  const rowsFor = elo_history.filter(d => d.name === activeWrestler);
-  const winsDerived = rowsFor.filter(d => d.role === 'winner').length;
-  const lossesDerived = rowsFor.filter(d => d.role === 'loser').length;
-  const winsFallDerived = rowsFor.filter(d => d.role === 'winner' && String(d.decision_type || '').toLowerCase() === 'fall').length;
-  const lossesFallDerived = rowsFor.filter(d => d.role === 'loser' && String(d.decision_type || '').toLowerCase() === 'fall').length;
-  const oppAvgDerived = (() => {
-    const vals = rowsFor.map(d => Number(d.opponent_pre_elo)).filter(Number.isFinite);
-    return vals.length ? (vals.reduce((a,b) => a + b, 0) / vals.length) : null;
-  })();
-  const wins = ('wins' in w) ? Number(w.wins ?? 0) : winsDerived;
-  const wins_fall = ('wins_fall' in w) ? Number(w.wins_fall ?? 0) : winsFallDerived;
-  const losses = ('losses' in w) ? Number(w.losses ?? 0) : lossesDerived;
-  const losses_fall = ('losses_fall' in w) ? Number(w.losses_fall ?? 0) : lossesFallDerived;
-  const opponent_avg_elo = ('opponent_avg_elo' in w) ? Number(w.opponent_avg_elo) : oppAvgDerived;
+  
+  const wins = Number(w.wins ?? 0);
+  const wins_fall = Number(w.wins_fall ?? 0);
+  const losses = Number(w.losses ?? 0);
+  const losses_fall = Number(w.losses_fall ?? 0);
+  const opponent_avg_elo = Number(w.opponent_avg_elo);
   const denom = (wins + losses);
   const win_pct = denom > 0 ? (wins / denom) * 100 : null;
   // Arrange: Team at top; general stats next; Elo-related grouped at bottom
@@ -265,7 +256,7 @@ const activeWrestler = (() => {
 ## Opponent Statistics
 
 ```js
-// Opponent summary table
+// Sortable opponent summary table
 (() => {
   const wrap = (html) => {
     const div = document.createElement("div");
@@ -294,6 +285,8 @@ const activeWrestler = (() => {
         name: opp,
         wins: 0,
         losses: 0,
+        winsFall: 0,
+        lossesFall: 0,
         totalMatches: 0,
         avgPreElo: 0,
         avgPostElo: 0,
@@ -306,10 +299,14 @@ const activeWrestler = (() => {
     const stats = opponentStats.get(opp);
     stats.totalMatches++;
     
+    const isFall = String(match.decision_type || '').toLowerCase().includes('fall') || ['FALL', 'PIN'].includes(String(match.decision_type_code || '').toUpperCase());
+    
     if (match.role === 'W' || match.role === 'winner') {
       stats.wins++;
+      if (isFall) stats.winsFall++;
     } else if (match.role === 'L' || match.role === 'loser') {
       stats.losses++;
+      if (isFall) stats.lossesFall++;
     }
     
     const preElo = Number(match.opponent_pre_elo);
@@ -328,54 +325,144 @@ const activeWrestler = (() => {
     }
   }
   
-  // Calculate averages and sort by total matches desc, then by name
-  const opponents = Array.from(opponentStats.values())
+  // Calculate averages and prepare data
+  let opponents = Array.from(opponentStats.values())
     .map(stats => ({
       ...stats,
       avgPreElo: stats.totalMatches > 0 ? stats.eloSum / stats.totalMatches : 0,
       avgPostElo: stats.totalMatches > 0 ? stats.postEloSum / stats.totalMatches : 0,
       winPct: stats.totalMatches > 0 ? (stats.wins / stats.totalMatches) * 100 : 0
-    }))
-    .sort((a, b) => b.totalMatches - a.totalMatches || a.name.localeCompare(b.name));
+    }));
   
   if (!opponents.length) return null;
   
-  const fmt = (n) => Number.isFinite(+n) ? Math.round(+n) : "-";
-  const fmt1 = (n) => Number.isFinite(+n) ? (+n).toFixed(1) : "-";
-  const dateStr = (v) => v ? v.toLocaleDateString?.() ?? String(v) : "-";
+  // Create sortable table
+  const tableId = `opponent-table-${activeWrestler.replace(/[^a-zA-Z0-9]/g, '-')}`;
+  let currentSort = { column: 'totalMatches', direction: 'desc' };
   
-  const rows = opponents.map(opp => `
-    <tr>
-      <td>${createWrestlerLink(opp.name)}</td>
-      <td>${opp.totalMatches}</td>
-      <td>${opp.wins}</td>
-      <td>${opp.losses}</td>
-      <td>${fmt1(opp.winPct)}%</td>
-      <td>${fmt(opp.avgPreElo)}</td>
-      <td>${dateStr(opp.lastDate)}</td>
-    </tr>
-  `).join("");
+  // Initial sort
+  const sortData = (column, direction) => {
+    opponents.sort((a, b) => {
+      let aVal = a[column];
+      let bVal = b[column];
+      
+      // Handle date sorting
+      if (column === 'lastDate') {
+        aVal = aVal ? aVal.getTime() : 0;
+        bVal = bVal ? bVal.getTime() : 0;
+      }
+      
+      // Handle string sorting (case insensitive)
+      if (typeof aVal === 'string') {
+        aVal = aVal.toLowerCase();
+        bVal = bVal.toLowerCase();
+      }
+      
+      let comparison;
+      if (aVal < bVal) {
+        comparison = -1;
+      } else if (aVal > bVal) {
+        comparison = 1;
+      } else {
+        // Fallback to name for stable sort
+        comparison = a.name.localeCompare(b.name);
+      }
+      
+      return direction === 'desc' ? -comparison : comparison;
+    });
+  };
   
-  return wrap(`
-    <div>
-      <table>
-        <thead>
-          <tr>
-            <th>Opponent</th>
-            <th>Matches</th>
-            <th>Wins</th>
-            <th>Losses</th>
-            <th>Win %</th>
-            <th>Avg Opp Elo</th>
-            <th>Last Match</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows}
-        </tbody>
-      </table>
-    </div>
-  `);
+  const renderTable = () => {
+    const fmt = (n) => Number.isFinite(+n) ? Math.round(+n) : "-";
+    const fmt1 = (n) => Number.isFinite(+n) ? (+n).toFixed(1) : "-";
+    const dateStr = (v) => v ? v.toLocaleDateString?.() ?? String(v) : "-";
+    
+    const getSortIcon = (column) => {
+      if (currentSort.column !== column) return ' ↕';
+      return currentSort.direction === 'desc' ? ' ↓' : ' ↑';
+    };
+    
+    const rows = opponents.map(opp => `
+      <tr>
+        <td>${createWrestlerLink(opp.name)}</td>
+        <td>${opp.totalMatches}</td>
+        <td>${opp.wins}</td>
+        <td>${opp.losses}</td>
+        <td>${opp.winsFall}</td>
+        <td>${opp.lossesFall}</td>
+        <td>${fmt1(opp.winPct)}%</td>
+        <td>${fmt(opp.avgPreElo)}</td>
+        <td>${dateStr(opp.lastDate)}</td>
+      </tr>
+    `).join("");
+    
+    return `
+      <div>
+        <table id="${tableId}">
+          <thead>
+            <tr>
+              <th data-sort="name" style="cursor: pointer; user-select: none;">Opponent${getSortIcon('name')}</th>
+              <th data-sort="totalMatches" style="cursor: pointer; user-select: none;">Matches${getSortIcon('totalMatches')}</th>
+              <th data-sort="wins" style="cursor: pointer; user-select: none;">Wins${getSortIcon('wins')}</th>
+              <th data-sort="losses" style="cursor: pointer; user-select: none;">Losses${getSortIcon('losses')}</th>
+              <th data-sort="winsFall" style="cursor: pointer; user-select: none;">Wins (Fall)${getSortIcon('winsFall')}</th>
+              <th data-sort="lossesFall" style="cursor: pointer; user-select: none;">Losses (Fall)${getSortIcon('lossesFall')}</th>
+              <th data-sort="winPct" style="cursor: pointer; user-select: none;">Win %${getSortIcon('winPct')}</th>
+              <th data-sort="avgPreElo" style="cursor: pointer; user-select: none;">Avg Opp Elo${getSortIcon('avgPreElo')}</th>
+              <th data-sort="lastDate" style="cursor: pointer; user-select: none;">Last Match${getSortIcon('lastDate')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+    `;
+  };
+  
+  const handleSort = (column) => {
+    // Toggle direction if same column, default to desc for new column
+    if (currentSort.column === column) {
+      currentSort.direction = currentSort.direction === 'desc' ? 'asc' : 'desc';
+    } else {
+      currentSort.column = column;
+      currentSort.direction = 'desc';
+    }
+    
+    // Sort data
+    sortData(column, currentSort.direction);
+    
+    // Update the table content
+    updateTable();
+  };
+  
+  const updateTable = () => {
+    const tableContainer = document.getElementById(`container-${tableId}`);
+    if (tableContainer) {
+      tableContainer.innerHTML = renderTable();
+      attachEventListeners();
+    }
+  };
+  
+  const attachEventListeners = () => {
+    const headers = document.querySelectorAll(`#${tableId} th[data-sort]`);
+    headers.forEach(header => {
+      header.addEventListener('click', () => {
+        handleSort(header.dataset.sort);
+      });
+    });
+  };
+  
+  // Sort initially by total matches (desc)
+  sortData('totalMatches', 'desc');
+  
+  const tableHtml = `<div id="container-${tableId}">${renderTable()}</div>`;
+  const container = wrap(tableHtml);
+  
+  // Attach initial event listeners
+  setTimeout(() => attachEventListeners(), 0);
+  
+  return container;
 })()
 ```
 
@@ -619,8 +706,4 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
 
 The Elo rating system is a method for calculating the relative skill levels of players in competitive games, famously used in chess. It assigns a numerical rating that is updated after every match based on the outcome and the difference in the players' ratings. If a higher-rated player wins as expected, they gain only a few points, but if a lower-rated player wins an upset, they earn a significant rating boost. The system is self-correcting over time, rewarding better-than-expected performance with rating increases and penalizing underperformance with decreases, providing an objective measure of a player's relative strength.
 
-```js
-// For debugging
-//display(wrestlers.find(d => d.name === activeWrestler))
-//display(series)
-```
+
