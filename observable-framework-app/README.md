@@ -9,6 +9,8 @@ npm install
 Then, to start the local preview server, run:
 
 ```
+.venv/Scripts/activate.ps1
+cd observable-framework-app
 npm run dev
 ```
 

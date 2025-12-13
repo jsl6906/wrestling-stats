@@ -736,14 +736,13 @@ def run() -> None:
 		last_match_date[wname] = start_date
 		last_match_date[lname] = start_date
 		# Winner/loser summaries
-		is_fall_win = ("fall" in (d_type or "").lower()) or (d_code or "").upper() in ("FALL", "PIN")
-		is_fall_loss = is_fall_win  # same event implies fall for both
+		is_fall_match = ("fall" in (d_type or "").lower()) or (d_code or "").upper() in ("FALL", "PIN")
 		is_dq = ("disq" in (d_type or "").lower()) or ((d_code or "").upper() == "DQ")
 		wins[wname] = wins.get(wname, 0) + 1
-		if is_fall_win:
+		if is_fall_match:
 			wins_fall[wname] = wins_fall.get(wname, 0) + 1
 		losses[lname] = losses.get(lname, 0) + 1
-		if is_fall_loss:
+		if is_fall_match:
 			losses_fall[lname] = losses_fall.get(lname, 0) + 1
 		if is_dq:
 			dqs[wname] = dqs.get(wname, 0) + 1
