@@ -576,7 +576,8 @@ const series = !activeWrestler ? [] : elo_history
 })
 ```
 
-## Elo history comparison
+## Elo History Comparison
+Orange lines reflect past opponents
 
 ```js
 // Display scope selector for comparison chart
