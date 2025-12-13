@@ -48,6 +48,67 @@ function createWrestlerLink(wrestlerName) {
 ```
 
 ```js
+// Calculate date range across all matches
+const dateRange = (() => {
+  const dates = elo_history
+    .map(d => parseDate(d.start_date_iso ?? d.start_date))
+    .filter(Boolean)
+    .sort((a, b) => a - b);
+  
+  if (dates.length === 0) return { min: null, max: null, count: 0 };
+  
+  return {
+    min: dates[0],
+    max: dates[dates.length - 1],
+    count: dates.length
+  };
+})();
+```
+
+```js
+// Helper to robustly parse dates from parquet (string/date/number)
+function parseDate(v) {
+  if (v == null) return null;
+  // Prefer ISO shadow column if present on row
+  if (typeof v === "string") {
+    const dt = new Date(v);
+    return isNaN(+dt) ? null : dt;
+  }
+  if (v && typeof v.toISOString === "function") return new Date(v);
+  if (typeof v === "number") {
+    // Heuristic: treat small numbers as days-since-epoch, large as ms
+    const ms = v < 1e10 ? v * 86400000 : v;
+    const dt = new Date(ms);
+    return isNaN(+dt) ? null : dt;
+  }
+  return null;
+}
+```
+
+```js
+// Display date range at top of page
+(() => {
+  const wrap = (html) => {
+    const div = document.createElement("div");
+    div.innerHTML = html.trim();
+    return div.firstChild || div;
+  };
+  
+  if (!dateRange.min || !dateRange.max) {
+    return wrap(`<p style="font-size: 0.9em; font-style: italic; margin: 0 0 20px 0;">No match data available</p>`);
+  }
+  
+  const formatDate = (date) => date.toLocaleDateString('en-US', { 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+  
+  return wrap(`<p style="font-size: 0.9em; font-style: italic; margin: 0 0 20px 0;">Data coverage: ${formatDate(dateRange.min)} to ${formatDate(dateRange.max)} • ${dateRange.count.toLocaleString()} total matches</p>`);
+})()
+```
+
+```js
 // Map wrestler name -> team (prefer wrestlers table, fallback to history)
 const nameToTeam = (() => {
   const m = new Map();
@@ -130,6 +191,8 @@ const activeWrestler = (() => {
 })();
 ```
 
+## Wrestler Details
+
 ```js
 // Selected wrestler summary card (DOM)
 (() => {
@@ -198,6 +261,8 @@ const activeWrestler = (() => {
   `);
 })()
 ```
+
+## Opponent Statistics
 
 ```js
 // Opponent summary table
@@ -293,7 +358,6 @@ const activeWrestler = (() => {
   
   return wrap(`
     <div>
-      <h3>Opponent Statistics</h3>
       <table>
         <thead>
           <tr>
@@ -316,24 +380,6 @@ const activeWrestler = (() => {
 ```
 
 ```js
-// Helper to robustly parse dates from parquet (string/date/number)
-function parseDate(v) {
-  if (v == null) return null;
-  // Prefer ISO shadow column if present on row
-  if (typeof v === "string") {
-    const dt = new Date(v);
-    return isNaN(+dt) ? null : dt;
-  }
-  if (v && typeof v.toISOString === "function") return new Date(v);
-  if (typeof v === "number") {
-    // Heuristic: treat small numbers as days-since-epoch, large as ms
-    const ms = v < 1e10 ? v * 86400000 : v;
-    const dt = new Date(ms);
-    return isNaN(+dt) ? null : dt;
-  }
-  return null;
-}
-
 // Coerce BigInt/strings to Numbers for plotting
 function toNum(v) {
   if (v == null) return null;
@@ -364,7 +410,9 @@ const series = !activeWrestler ? [] : elo_history
   .sort((a, b) => a.date - b.date);
 ```
 
-### Elo Ratings Over Time ([What is Elo rating?](#what-is-elo-rating))
+## Elo Ratings Over Time
+[What is Elo rating?](#what-is-elo-rating)
+
 ```js
 // Line chart of Elo over time for the selected wrestler
 !activeWrestler ? "Select a wrestler to view their Elo rating history." : Plot.plot({
