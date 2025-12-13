@@ -4,7 +4,7 @@ Scrape TrackWrestling NVWF tournaments and save Round Results HTML per round.
 Design (per approach.md):
 - Iterate tournament result pages
 - For each tournament: open modal, click Enter Event, go to Round Results
-- Iterate rounds (excluding All Rounds), click Go, save HTML as raw_results/<date>_<name>/<round>.html
+- Iterate rounds (excluding All Rounds), click Go, save parsed data to DuckDB
 - Use DuckDB to keep lightweight metadata tables (tournaments, rounds, pages)
 
 Notes:
@@ -251,10 +251,7 @@ def run_scraper(args: argparse.Namespace) -> None:
 	# Delay import to allow linting without playwright installed
 	from playwright.sync_api import sync_playwright
 
-	out_root = Path("Raw Results")
-	out_root.mkdir(parents=True, exist_ok=True)
-
-	# Open local DuckDB file next to outputs
+	# Open local DuckDB file
 	db_path = Path("output") / "trackwrestling.db"
 	db_path.parent.mkdir(parents=True, exist_ok=True)
 	conn = duckdb.connect(str(db_path))
