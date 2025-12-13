@@ -18,8 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+# Add project root to Python path so we can import from code package
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import duckdb
-from .shared_trackwrestling import (
+from code.shared_trackwrestling import (
     BASE_SEARCH_URL,
     ensure_rounds_table,
     open_event_by_id,
@@ -117,7 +120,7 @@ def run_scraper(args: argparse.Namespace) -> None:
         page = context.new_page()
         page.goto(BASE_SEARCH_URL, wait_until="domcontentloaded")
 
-        from .shared_trackwrestling import (
+        from code.shared_trackwrestling import (
             wait_for_tournament_frame,
             return_to_list,
         )

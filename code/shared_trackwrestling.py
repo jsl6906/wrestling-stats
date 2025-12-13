@@ -232,6 +232,48 @@ def open_event_by_id(page: Any, event_id: str) -> bool:
 def enter_event(page: Any) -> bool:
     from playwright.sync_api import TimeoutError as PWTimeout
 
+    # First, try to change dropdown from "Viewer" to "Viewer (classic)" before entering event
+    try:
+        # Look for the specific userType dropdown on page or in frames
+        dropdown_changed = False
+        for frame in [page] + list(page.frames):
+            try:
+                # Look specifically for select#userType
+                user_type_select = frame.locator('select#userType')
+                if user_type_select.count() > 0:
+                    logger.debug("found userType dropdown; changing to 'Viewer (classic)'")
+                    
+                    # Select the "Viewer (classic)" option by value="viewer"
+                    try:
+                        user_type_select.select_option(value='viewer')
+                        dropdown_changed = True
+                        logger.debug("changed userType dropdown to 'Viewer (classic)' via value='viewer'")
+                        break
+                    except Exception as e:
+                        logger.warning("failed to select viewer option by value: %s", e)
+                        # Fallback: try by label text
+                        try:
+                            user_type_select.select_option(label='Viewer (classic)')
+                            dropdown_changed = True
+                            logger.debug("changed userType dropdown to 'Viewer (classic)' via label")
+                            break
+                        except Exception as e2:
+                            logger.warning("failed to select viewer option by label: %s", e2)
+                            continue
+                
+                if dropdown_changed:
+                    break
+            except Exception:
+                continue
+        
+        if dropdown_changed:
+            logger.debug("successfully changed userType dropdown to classic mode")
+        else:
+            logger.debug("userType dropdown not found - may already be set correctly or not present")
+            
+    except Exception as e:
+        logger.warning("error trying to change userType dropdown: %s", e)
+
     try:
         logger.debug("attempting 'Enter Event' by role button; url=%s", getattr(page, 'url', None))
         page.get_by_role("button", name="Enter Event").click(timeout=5000)

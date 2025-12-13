@@ -6,7 +6,7 @@ and writes the Parquet bytes to stdout (so the final built asset is elo_history.
 
 Notes:
 - We write Parquet via DuckDB COPY to a temporary file, then stream the file to stdout.
-- Keep ALL logging on stderr to avoid corrupting the Parquet binary on stdout.
+- Keep ALL logging on stderr to avoid corrupting the Parquet binary on stdout. 
 """
 
 from __future__ import annotations

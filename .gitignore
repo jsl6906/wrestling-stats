@@ -10,9 +10,8 @@ wheels/
 .venv
 
 # Project outputs
-output/
-Raw Results/
-raw_results/
+# Comment out to commit the duckdb database file so the observable app can run the data pipeline
+# output/
 
 # IDE Settings
 .vscode/
