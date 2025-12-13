@@ -436,13 +436,12 @@ const series = !activeWrestler ? [] : elo_history
 })
 ```
 
+## Elo history comparison
+
 ```js
-// Dynamic comparison heading
-(() => {
-  const h = document.createElement("h2");
-  h.textContent = teamFilter === "All teams" ? "All wrestlers comparison" : `Team comparison: ${teamFilter}`;
-  return h;
-})()
+// Display scope selector for comparison chart
+const displayScopeOptions = ['All NVWF Wrestlers', 'Current Team', 'Opponents'];
+const displayScope = view(select(displayScopeOptions, {label: "Compare against", value: displayScopeOptions[0]}));
 ```
 
 ```js
@@ -455,27 +454,64 @@ const opponentNames = !activeWrestler ? new Set() : new Set(
 ```
 
 ```js
-// Prepare overlay data: separate opponents from non-opponents for different styling
-const allWrestlerData = !activeWrestler ? [] : elo_history
-  .map(d => ({ name: d.name, seq: toNum(d.elo_sequence), post_elo: toNum(d.post_elo) }))
-  .filter(d => d.name && Number.isFinite(d.seq) && Number.isFinite(d.post_elo))
-  .filter(d => teamFilter === "All teams" || (nameToTeam.get(d.name) ?? null) === teamFilter)
-  .filter(d => d.name !== activeWrestler); // Exclude the selected wrestler from background
+// Prepare overlay data based on display scope selection
+const allWrestlerData = !activeWrestler ? [] : (() => {
+  let filteredData = elo_history
+    .map(d => ({ name: d.name, seq: toNum(d.elo_sequence), post_elo: toNum(d.post_elo) }))
+    .filter(d => d.name && Number.isFinite(d.seq) && Number.isFinite(d.post_elo))
+    .filter(d => d.name !== activeWrestler); // Exclude the selected wrestler from background
+  
+  // Apply display scope filter
+  if (displayScope === 'Current Team') {
+    const currentTeam = nameToTeam.get(activeWrestler);
+    if (currentTeam) {
+      filteredData = filteredData.filter(d => (nameToTeam.get(d.name) ?? null) === currentTeam);
+    } else {
+      filteredData = []; // No team data, show empty
+    }
+  } else if (displayScope === 'Opponents') {
+    filteredData = filteredData.filter(d => opponentNames.has(d.name));
+  }
+  // For 'All NVWF Wrestlers', no additional filtering needed
+  
+  return filteredData;
+})();
+```
 
-// Split into opponents and non-opponents
-const opponentSeries = allWrestlerData
-  .filter(d => opponentNames.has(d.name))
-  .sort((a, b) => {
-    const n = String(a.name).localeCompare(String(b.name));
-    return n !== 0 ? n : (a.seq - b.seq);
-  });
+```js
+// Split into opponents and non-opponents based on display scope
+const opponentSeries = (() => {
+  if (displayScope === 'Opponents') {
+    // When showing only opponents, all data should be styled as opponents
+    return allWrestlerData.sort((a, b) => {
+      const n = String(a.name).localeCompare(String(b.name));
+      return n !== 0 ? n : (a.seq - b.seq);
+    });
+  } else {
+    // For other scopes, highlight actual opponents
+    return allWrestlerData
+      .filter(d => opponentNames.has(d.name))
+      .sort((a, b) => {
+        const n = String(a.name).localeCompare(String(b.name));
+        return n !== 0 ? n : (a.seq - b.seq);
+      });
+  }
+})();
 
-const nonOpponentSeries = allWrestlerData
-  .filter(d => !opponentNames.has(d.name))
-  .sort((a, b) => {
-    const n = String(a.name).localeCompare(String(b.name));
-    return n !== 0 ? n : (a.seq - b.seq);
-  });
+const nonOpponentSeries = (() => {
+  if (displayScope === 'Opponents') {
+    // When showing only opponents, no non-opponent series
+    return [];
+  } else {
+    // For other scopes, show non-opponents with faint styling
+    return allWrestlerData
+      .filter(d => !opponentNames.has(d.name))
+      .sort((a, b) => {
+        const n = String(a.name).localeCompare(String(b.name));
+        return n !== 0 ? n : (a.seq - b.seq);
+      });
+  }
+})();
 ```
 
 ```js
@@ -510,7 +546,7 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
               return `${d.name}\nClick to view: ${url.href}`;
             }
           }),
-          // Highlighted: opponent wrestlers, more prominent
+          // Highlighted: opponent wrestlers or all wrestlers in opponents-only view
           Plot.line(opponentSeries, {
             x: "seq",
             y: "post_elo",
@@ -523,7 +559,8 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
             title: d => {
               const url = new URL(window.location);
               url.searchParams.set('wrestler', d.name);
-              return `${d.name} (opponent)\nClick to view: ${url.href}`;
+              const suffix = displayScope === 'Opponents' ? '' : ' (opponent)';
+              return `${d.name}${suffix}\nClick to view: ${url.href}`;
             }
           }),
           // Halo for selected wrestler line (drawn after background, before foreground)
