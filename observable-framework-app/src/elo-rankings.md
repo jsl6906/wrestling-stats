@@ -158,7 +158,7 @@ const activeWrestler = (() => {
     ["Losses (Fall)", losses_fall],
     ["Win %", win_pct == null ? '-' : `${fmt1(win_pct)}%`],
     ["Last Opponent", createWrestlerLink(w.last_opponent_name)],
-    ["Last Date", dateStr(w.last_start_date)]
+    ["Last Match Date", dateStr(w.last_start_date)]
   ];
   const eloRows = [
     ["Current Elo", fmt(w.current_elo)],
@@ -367,7 +367,8 @@ Plot.plot({
 
 ```js
 // Optional: show a small table of the last 10 matches
-series.slice(-10)
+display(wrestlers.find(d => d.name === activeWrestler))
+display(series)
 ```
 
 ```js

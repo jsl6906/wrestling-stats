@@ -1,0 +1,89 @@
+name: Deploy
+
+on:
+  # Run this workflow whenever a new commit is pushed to main.
+  push: {branches: [main]}
+  # Run this workflow once per day, at 10:15 UTC
+  # Since the data is static, no need for schedule runs, only when we commit new data
+  # schedule: [{cron: "15 10 * * *"}]
+  # Run this workflow when triggered manually in GitHub’s UI.
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Sync uv to get python dependencies
+        run: uv sync
+
+      - name: Set up node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install node dependencies
+        run: npm ci
+
+      - name: Check install by showing versions
+        run: |
+          echo "PATH: "
+          echo $PATH
+          python --version
+          uv --version
+          echo "Node: "
+          node --version
+          echo "NPM: "
+          npm --version
+
+      - name: Activate venv, execute the data loaders and build the static Observable Framework site
+        run: |
+          . .venv/bin/activate
+          npm run build
+
+
+      - name: Install node dependencies
+        run: npm ci
+
+      - name: Check install by showing versions
+        run: |
+          echo "PATH: "
+          echo $PATH
+          python --version
+          uv --version
+          echo "Node: "
+          node --version
+          echo "NPM: "
+          npm --version
+
+      - name: Activate venv, execute the data loaders and build the static Observable Framework site
+        run: |
+          . .venv/bin/activate
+          npm run build
+
+      - uses: actions/configure-pages@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: observable-framework-app/dist
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
