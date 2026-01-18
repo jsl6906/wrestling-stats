@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.env
 
 # Project outputs
 # Comment out to commit the duckdb database file so the observable app can run the data pipeline
