@@ -74,6 +74,14 @@ TOURNAMENT_TYPE_NAMES = {
     5: "Season Tournament",
 }
 
+# Tournaments to exclude from scraping (add event_ids here as needed)
+# Example reasons: incomplete data, parsing issues, test events, etc.
+EXCLUDED_TOURNAMENT_IDS = [
+    # Add event IDs here as strings, e.g.:
+    # "12345",  # Reason: incomplete bracket
+    # "67890",  # Reason: test tournament
+]
+
 
 def _get_timestamp() -> str:
     """Generate TIM parameter (milliseconds since epoch)."""
@@ -630,30 +638,49 @@ def parse_dual_meet_bouts(page) -> List[Tuple[str, str]]:
             out.append((value, label))
         return out
 
-    # Try on the page first
+    # Check frames first (most common location for dual meets)
+    for fr in page.frames:
+        try:
+            sel = fr.locator("select#boutNumberBox")
+            # Quick check if it exists before waiting
+            if sel.count() > 0:
+                bouts = _extract_from_select(sel)
+                logger.debug("boutNumberBox found in frame; options=%s", len(bouts))
+                return bouts
+        except Exception:
+            continue
+
+    # Try on the main page (less common, but check anyway)
     try:
         select = page.locator("select#boutNumberBox")
-        select.wait_for(timeout=4000)
+        # Quick check first
+        if select.count() > 0:
+            bouts = _extract_from_select(select)
+            logger.debug("boutNumberBox found on page; options=%s", len(bouts))
+            return bouts
+    except Exception:
+        pass
+
+    # If not found immediately, wait a bit and try again (page might still be loading)
+    try:
+        select = page.locator("select#boutNumberBox")
+        select.wait_for(timeout=2000)
         bouts = _extract_from_select(select)
-        logger.debug("boutNumberBox found on page; options=%s", len(bouts))
+        logger.debug("boutNumberBox found on page after wait; options=%s", len(bouts))
         return bouts
     except PWTimeout:
         pass
     except Exception:
         pass
 
-    # Look through frames
+    # Final attempt: check frames with wait
     for fr in page.frames:
         try:
             sel = fr.locator("select#boutNumberBox")
-            if sel.count() > 0:
-                try:
-                    sel.wait_for(timeout=3000)
-                except Exception:
-                    pass
-                bouts = _extract_from_select(sel)
-                logger.debug("boutNumberBox found in frame; options=%s", len(bouts))
-                return bouts
+            sel.wait_for(timeout=1500)
+            bouts = _extract_from_select(sel)
+            logger.debug("boutNumberBox found in frame after wait; options=%s", len(bouts))
+            return bouts
         except Exception:
             continue
 
@@ -744,6 +771,11 @@ def run_scraper(args: argparse.Namespace) -> None:
     eligible_events: List[Tournament] = []
 
     for t in discovered:
+        # Skip excluded tournaments
+        if t.event_id in EXCLUDED_TOURNAMENT_IDS:
+            logger.debug("Skipping excluded event %s (%s)", t.event_id, t.name)
+            continue
+        
         # Skip future events
         if t.start_date:
             try:
@@ -802,7 +834,6 @@ def run_scraper(args: argparse.Namespace) -> None:
                 # Reset page state between tournaments to prevent navigation conflicts
                 try:
                     page.goto("about:blank", wait_until="domcontentloaded", timeout=5000)
-                    time.sleep(0.3)
                 except Exception:
                     pass
 
@@ -817,7 +848,6 @@ def run_scraper(args: argparse.Namespace) -> None:
                     page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
                     pass
-                time.sleep(1)
 
                 # Step 2: Navigate to RoundResults
                 logger.debug("Loading round results: %s", round_results_url)
@@ -827,7 +857,6 @@ def run_scraper(args: argparse.Namespace) -> None:
                     page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
                     pass
-                time.sleep(1.5)
 
                 # Check for round selector (standard tournaments)
                 round_selector_found = False
@@ -864,13 +893,11 @@ def run_scraper(args: argparse.Namespace) -> None:
                                 page.wait_for_load_state("networkidle", timeout=3000)
                             except Exception:
                                 pass
-                            time.sleep(0.5)
                             page.goto(alt_results, wait_until="load", timeout=10000)
                             try:
                                 page.wait_for_load_state("networkidle", timeout=3000)
                             except Exception:
                                 pass
-                            time.sleep(1)
 
                             for fr in [page] + list(page.frames):
                                 try:
@@ -907,7 +934,6 @@ def run_scraper(args: argparse.Namespace) -> None:
                             page.wait_for_load_state("networkidle", timeout=5000)
                         except Exception:
                             pass
-                        time.sleep(1.5)
                     except Exception as e:
                         logger.debug("Failed to load main frame: %s", e)
                     
@@ -920,7 +946,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                             if results_link.count() > 0:
                                 logger.debug("Clicking Results link")
                                 results_link.click(timeout=3000)
-                                time.sleep(0.5)
+                                time.sleep(0.2)
                         except Exception:
                             pass
                         
@@ -935,7 +961,6 @@ def run_scraper(args: argparse.Namespace) -> None:
                                         page.wait_for_load_state("networkidle", timeout=5000)
                                     except Exception:
                                         pass
-                                    time.sleep(1.5)
                                     dual_link_found = True
                                     break
                             except Exception as e:
@@ -995,10 +1020,9 @@ def run_scraper(args: argparse.Namespace) -> None:
                                         if link.count() > 0:
                                             link.click(timeout=5000)
                                             try:
-                                                page.wait_for_load_state("networkidle", timeout=5000)
+                                                page.wait_for_load_state("networkidle", timeout=3000)
                                             except Exception:
                                                 pass
-                                            time.sleep(1.5)
                                             chart_link_clicked = True
                                             break
                                     except Exception as e:
@@ -1055,7 +1079,6 @@ def run_scraper(args: argparse.Namespace) -> None:
                                                 page.wait_for_load_state("networkidle", timeout=3000)
                                             except Exception:
                                                 pass
-                                            time.sleep(0.8)
                                             # Re-find frame
                                             for fr in [page] + list(page.frames):
                                                 try:
@@ -1071,7 +1094,7 @@ def run_scraper(args: argparse.Namespace) -> None:
 
                                     # Select bout
                                     bout_frame.locator("select#boutNumberBox").select_option(value=bout_id)
-                                    time.sleep(0.5)
+                                    time.sleep(0.2)
 
                                     # Wait for the PageFrame iframe to appear and load its content
                                     # The iframe starts with src="" and gets populated dynamically
@@ -1085,7 +1108,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                                         
                                         # Wait for iframe#PageFrame to exist and have a non-empty src
                                         detail_frame = None
-                                        max_attempts = 8
+                                        max_attempts = 10
                                         
                                         for attempt in range(max_attempts):
                                             # Look for iframe with id="PageFrame" or name="PageFrame"
@@ -1117,9 +1140,9 @@ def run_scraper(args: argparse.Namespace) -> None:
                                             if detail_frame:
                                                 break
                                             
-                                            # Wait progressively longer between attempts
+                                            # Wait shorter, more frequent checks
                                             if attempt < max_attempts - 1:
-                                                wait_time = 0.5 + (attempt * 0.3)
+                                                wait_time = 0.2 + (attempt * 0.1)
                                                 logger.debug("PageFrame not ready on attempt %d, waiting %.1fs...", attempt + 1, wait_time)
                                                 time.sleep(wait_time)
                                         
@@ -1130,9 +1153,6 @@ def run_scraper(args: argparse.Namespace) -> None:
                                                 detail_frame.wait_for_selector("table, section.tw-list", timeout=5000)
                                             except Exception as e:
                                                 logger.debug("Timeout waiting for content in detail frame: %s", e)
-                                            
-                                            # Give it a moment to fully render
-                                            time.sleep(0.5)
                                             
                                             # Try to get just the relevant table/section, not the whole page
                                             # Look for section.tw-list first (match results section)
@@ -1196,7 +1216,6 @@ def run_scraper(args: argparse.Namespace) -> None:
                                     page.wait_for_load_state("networkidle", timeout=3000)
                                 except Exception:
                                     pass
-                                time.sleep(1.0)
                                 
                         except Exception as e:
                             logger.debug("Error processing chart %s: %s", chart_name, e)
@@ -1234,7 +1253,6 @@ def run_scraper(args: argparse.Namespace) -> None:
                             page.wait_for_load_state("networkidle", timeout=3000)
                         except Exception:
                             pass
-                        time.sleep(0.8)
 
                         # Find round selector frame
                         rounds_frame = None
@@ -1251,7 +1269,7 @@ def run_scraper(args: argparse.Namespace) -> None:
 
                         # Select round and click Go
                         rounds_frame.locator("select#roundIdBox").select_option(value=rid)
-                        time.sleep(0.3)
+                        time.sleep(0.1)
 
                         go_btn = rounds_frame.locator(
                             'input[type="button"][value="Go"][onclick*="viewSchedule"], '
@@ -1259,7 +1277,11 @@ def run_scraper(args: argparse.Namespace) -> None:
                         ).first
                         if go_btn.count() > 0:
                             go_btn.click()
-                            time.sleep(0.8)
+                            # Wait for content to load
+                            try:
+                                page.wait_for_load_state("networkidle", timeout=2000)
+                            except Exception:
+                                pass
 
                         # Get HTML content
                         raw_html = None

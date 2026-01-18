@@ -136,15 +136,51 @@ def mark_parsed_ok(conn: duckdb.DuckDBPyConnection, event_id: str, round_id: str
 
 
 def parse_round_html(raw_html: str) -> List[tuple]:
-    """Return a list of tuples: (weight_class, raw_li_html) for each match LI under tw-list.
-    Parsing strategy: linear scan of section.tw-list children, track current <h2> as weight_class,
-    and capture each <li> inside following <ul> elements as separate matches until the next <h2>.
+    """Return a list of tuples: (weight_class, raw_li_html) for each match.
+    
+    Supports two formats:
+    1. Standard tournament format: section.tw-list with <h2> weight classes and <ul><li> matches
+    2. Dual meet format: table.tw-table with <tr> rows containing weight class and match data
     """
     soup = BeautifulSoup(raw_html or "", "html.parser")
-    section = soup.select_one("section.tw-list, section[class~=tw-list]")
     results: List[tuple] = []
+    
+    # Try dual meet table format first (table.tw-table)
+    table = soup.select_one("table.tw-table")
+    if table:
+        # Dual meet format: each <tr> contains weight class in first <td>, match in second <td>
+        rows = table.find_all("tr")
+        for row in rows:
+            cells = row.find_all("td")
+            if len(cells) >= 2:
+                # First cell typically contains weight class link
+                weight_cell = cells[0]
+                match_cell = cells[1]
+                
+                # Extract weight class (from link text or cell text)
+                weight_link = weight_cell.find("a")
+                if weight_link:
+                    weight_class = (weight_link.get_text(strip=True) or "").strip()
+                else:
+                    weight_class = (weight_cell.get_text(strip=True) or "").strip()
+                
+                # Skip header rows or empty weight classes
+                if not weight_class or weight_class.lower() in ["&nbsp;", "", "match summary"]:
+                    continue
+                
+                # Get match summary HTML (inner HTML of the match cell)
+                match_html = match_cell.decode_contents()
+                if match_html and match_html.strip():
+                    results.append((weight_class, match_html))
+        
+        if results:  # If we found dual meet data, return it
+            return results
+    
+    # Fall back to standard tournament format (section.tw-list)
+    section = soup.select_one("section.tw-list, section[class~=tw-list]")
     if not section:
         return results
+    
     current_weight: Optional[str] = None
     for child in section.children:
         if not isinstance(child, Tag):
@@ -291,12 +327,27 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
         "bye": False,
     }
 
+    # Skip dual meet score summary rows (just team scores, no match data)
+    # These appear as simple numbers like "72.0" or "30.0"
+    if _re.match(r'^\d+\.?\d*$', text.strip()):
+        out["bye"] = True
+        out["decision_type"] = "bye"
+        out["decision_type_code"] = "SCORE"
+        return out
+
     # Extract round detail prefix if present
     if " - " in text:
         rd, rest = text.split(" - ", 1)
         out["round_detail"] = rd.strip()
     else:
         rest = text
+
+    # Double forfeit case (standalone text)
+    if rest.strip().lower() == "double forfeit":
+        out["decision_type"] = "bye"
+        out["decision_type_code"] = "DFF"
+        out["bye"] = True
+        return out
 
     # DFF (double forfeit) case: "A (Team) and B (Team) DFF"
     if "dff" in rest.lower():
@@ -358,7 +409,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
                 pass
         return _apply_name_team_conversions(out)
 
-    # Normal or fall cases
+    # Normal or fall cases - "won by <decision>"
     # Winner (Team) won by <decision_type> over Loser (Team) <CODE> <score|time>
     m = _re.search(
         r"^(?P<win>.+?)\s+\((?P<wteam>.+?)\)\s+won by\s+(?P<dtype>.+?)\s+over\s+"
@@ -377,6 +428,53 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
         score = m.group("score")
         ftime = m.group("ftime")
         if ftime and out["decision_type"].startswith("fall"):
+            out["fall_time"] = ftime
+        elif score:
+            try:
+                wp, lp = score.split("-")
+                out["winner_points"] = int(wp)
+                out["loser_points"] = int(lp)
+            except Exception:
+                pass
+        return _apply_name_team_conversions(out)
+
+    # Dual meet simplified format: Winner (Team) over Loser (Team) <Decision> <score|time>
+    # This format omits "won by" and just uses "over"
+    m_simple = _re.search(
+        r"^(?P<win>.+?)\s+\((?P<wteam>.+?)\)\s+over\s+"
+        r"(?P<lose>.+?)\s+\((?P<lteam>.+?)\)\s+"
+        r"(?P<dcode>[A-Za-z0-9-]+)(?:\s+(?P<score>\d+-\d+)|\s+(?P<ftime>\d+:\d+))?",
+        rest,
+        _re.I,
+    )
+    if m_simple:
+        out["winner_name"] = m_simple.group("win").strip()
+        out["winner_team"] = m_simple.group("wteam").strip()
+        out["loser_name"] = m_simple.group("lose").strip()
+        out["loser_team"] = m_simple.group("lteam").strip()
+        out["decision_type_code"] = m_simple.group("dcode").strip()
+        
+        # Infer decision_type from code
+        code_up = out["decision_type_code"].upper()
+        if code_up in ("SV-1", "SV1"):
+            out["decision_type"] = "sudden victory"
+        elif "FALL" in code_up or code_up == "PIN":
+            out["decision_type"] = "fall"
+        elif code_up in ("MD", "MAJ"):
+            out["decision_type"] = "major decision"
+        elif code_up == "TF":
+            out["decision_type"] = "tech fall"
+        elif code_up in ("DEC", "D"):
+            out["decision_type"] = "decision"
+        elif code_up == "FORF":
+            out["decision_type"] = "forfeit"
+        elif code_up in ("OT", "TB-1", "UTB"):
+            out["decision_type"] = "overtime"
+        
+        # Capture score or fall time
+        score = m_simple.group("score")
+        ftime = m_simple.group("ftime")
+        if ftime and (out.get("decision_type") or "").startswith("fall"):
             out["fall_time"] = ftime
         elif score:
             try:

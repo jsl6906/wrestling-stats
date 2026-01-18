@@ -160,7 +160,7 @@ def close_any_modals(page: Any) -> None:
         if close_button.count() > 0 and close_button.is_visible():
             logger.debug("Closing open modal")
             close_button.click()
-            time.sleep(0.3)
+            time.sleep(0.1)
     except Exception:
         pass
     # Also try calling hideModal() directly
@@ -242,7 +242,6 @@ def goto_round_results(page: Any) -> bool:
                     logger.debug("navigated to RoundResults; url=%s", getattr(page, 'url', None))
                     
                     # Verify we got the round selector
-                    time.sleep(0.5)
                     for fr in [page] + list(page.frames):
                         try:
                             if fr.locator("select#roundIdBox").count() > 0:
@@ -259,7 +258,6 @@ def goto_round_results(page: Any) -> bool:
                 logger.debug("clicked RoundResults anchor; url=%s", getattr(page, 'url', None))
                 
                 # Verify round selector
-                time.sleep(0.5)
                 for fr in [page] + list(page.frames):
                     try:
                         if fr.locator("select#roundIdBox").count() > 0:
@@ -401,7 +399,7 @@ def goto_round_results(page: Any) -> bool:
                 logger.debug("navigated to RoundResults with session; url=%s", getattr(page, 'url', None))
                 
                 # Check if we got a valid page with round selector
-                time.sleep(0.8)
+                time.sleep(0.4)
                 has_rounds = False
                 for fr in [page] + list(page.frames):
                     try:
@@ -448,7 +446,7 @@ def goto_round_results(page: Any) -> bool:
                         if link.count() > 0 and link.is_visible():
                             logger.debug("found Round Results link with selector: %s", selector)
                             link.click(timeout=5000)
-                            time.sleep(0.8)
+                            time.sleep(0.3)
                             
                             # Verify round selector appeared
                             for check_fr in [page] + list(page.frames):
