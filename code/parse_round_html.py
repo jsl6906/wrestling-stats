@@ -23,6 +23,11 @@ import re
 from bs4 import BeautifulSoup, Tag
 import duckdb
 
+try:
+    from .config import get_db_path
+except ImportError:
+    from config import get_db_path
+
 
 def ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     # Ensure matches table exists with structured fields; add missing columns if table already exists
@@ -295,7 +300,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
 
     # DFF (double forfeit) case: "A (Team) and B (Team) DFF"
     if "dff" in rest.lower():
-        m = _re.search(r"^(?P<a>.+) \((?P<ateam>[^)]*)\)\s+and\s+(?P<b>.+) \((?P<bteam>[^)]*)\)\s+DFF\b", rest, _re.I)
+        m = _re.search(r"^(?P<a>.+?) \((?P<ateam>.+?)\)\s+and\s+(?P<b>.+?) \((?P<bteam>.+?)\)\s+DFF\b", rest, _re.I)
         if m:
             # Store both participants; treat as a bye to skip Elo
             out["winner_name"] = m.group("a").strip()
@@ -309,7 +314,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
 
     # Bye case
     if "received a bye" in rest.lower():
-        m = _re.search(r"^(?P<win>.+) \((?P<wteam>[^)]*)\)\s+received a bye", rest, _re.I)
+        m = _re.search(r"^(?P<win>.+?) \((?P<wteam>.+?)\)\s+received a bye", rest, _re.I)
         if m:
             out["winner_name"] = m.group("win").strip()
             out["winner_team"] = m.group("wteam").strip()
@@ -320,8 +325,8 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
 
     # "Won in <type>" cases (e.g., sudden victory - 1)
     m_in = _re.search(
-        r"^(?P<win>(?:[^()]|\([^)]*\))+?)\s+\((?P<wteam>[^)]*)\)\s+won in\s+(?P<dtype>.+?)\s+over\s+"
-        r"(?P<lose>(?:[^()]|\([^)]*\))+?)\s+\((?P<lteam>[^)]*)\)\s+"
+        r"^(?P<win>.+?)\s+\((?P<wteam>.+?)\)\s+won in\s+(?P<dtype>.+?)\s+over\s+"
+        r"(?P<lose>.+?)\s+\((?P<lteam>.+?)\)\s+"
         r"(?P<dcode>[A-Za-z0-9-]+)(?:\s+\((?P<dnote>[^)]+)\))?(?:\s+(?P<score>\d+-\d+)|\s+(?P<ftime>\d+:\d+))?",
         rest,
         _re.I,
@@ -356,8 +361,8 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
     # Normal or fall cases
     # Winner (Team) won by <decision_type> over Loser (Team) <CODE> <score|time>
     m = _re.search(
-        r"^(?P<win>(?:[^()]|\([^)]*\))+?)\s+\((?P<wteam>[^)]*)\)\s+won by\s+(?P<dtype>.+?)\s+over\s+"
-        r"(?P<lose>(?:[^()]|\([^)]*\))+?)\s+\((?P<lteam>[^)]*)\)\s+"
+        r"^(?P<win>.+?)\s+\((?P<wteam>.+?)\)\s+won by\s+(?P<dtype>.+?)\s+over\s+"
+        r"(?P<lose>.+?)\s+\((?P<lteam>.+?)\)\s+"
         r"(?P<dcode>[A-Za-z0-9-]+)(?:\s+\((?P<dnote>[^)]+)\))?(?:\s+(?P<score>\d+-\d+)|\s+(?P<ftime>\d+:\d+))?",
         rest,
         _re.I,
@@ -385,8 +390,8 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
     # Variant: Winner (Team) won over Loser (Team) <CODE> <score|time>
     # Some entries omit the explicit decision phrase; we still capture code and numbers.
     m_over = _re.search(
-        r"^(?P<win>(?:[^()]|\([^)]*\))+?)\s+\((?P<wteam>[^)]*)\)\s+won over\s+"
-        r"(?P<lose>(?:[^()]|\([^)]*\))+?)\s+\((?P<lteam>[^)]*)\)\s+"
+        r"^(?P<win>.+?)\s+\((?P<wteam>.+?)\)\s+won over\s+"
+        r"(?P<lose>.+?)\s+\((?P<lteam>.+?)\)\s+"
         r"(?P<dcode>\S+)(?:\s+(?P<score>\d+-\d+)|\s+(?P<ftime>\d+:\d+))?",
         rest,
         _re.I,
@@ -424,7 +429,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
         return _apply_name_team_conversions(out)
 
     # Fallback minimal parse without code/score
-    m2 = _re.search(r"^(?P<win>.+) \((?P<wteam>[^)]*)\)\s+won by\s+(?P<dtype>.+?)\s+over\s+(?P<lose>.+) \((?P<lteam>[^)]*)\)", rest, _re.I)
+    m2 = _re.search(r"^(?P<win>.+?)\s+\((?P<wteam>.+?)\)\s+won by\s+(?P<dtype>.+?)\s+over\s+(?P<lose>.+?)\s+\((?P<lteam>.+?)\)", rest, _re.I)
     if m2:
         out["winner_name"] = m2.group("win").strip()
         out["winner_team"] = m2.group("wteam").strip()
@@ -440,12 +445,13 @@ def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger = logging.getLogger(__name__)
 
-    conn = duckdb.connect("output/trackwrestling.db")
+    conn = duckdb.connect(str(get_db_path()))
     ensure_schema(conn)
 
     rows = fetch_unparsed_round_html(conn)
     if not rows:
         logger.info("No unparsed round HTML found.")
+        conn.close()
         return
 
     for event_id, round_id, label, raw_html in rows:
@@ -466,9 +472,14 @@ def run() -> None:
                 insert_match(conn, row)
                 saved += 1
             mark_parsed_ok(conn, event_id, round_id)
+            conn.commit()  # Explicitly commit after each round
             logger.info("parsed event=%s round=%s label=%s -> matches=%s", event_id, round_id, label, saved)
         except Exception as e:
             logger.warning("failed to parse event=%s round=%s: %s", event_id, round_id, e)
+            conn.rollback()  # Rollback on error
+    
+    conn.commit()  # Final commit
+    conn.close()
 
 
 if __name__ == "__main__":

@@ -37,6 +37,12 @@ import logging
 from typing import Dict, Optional, Any, List, Tuple
 
 import duckdb
+
+try:
+	from .config import get_db_path
+except ImportError:
+	from config import get_db_path
+
 try:
 	from tqdm.auto import tqdm  # type: ignore
 except Exception:
@@ -492,7 +498,7 @@ def run() -> None:
 	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 	log = logging.getLogger(__name__)
 
-	conn = duckdb.connect("output/trackwrestling.db")
+	conn = duckdb.connect(str(get_db_path()))
 	ensure_matches_elo_columns(conn)
 	ensure_wrestlers_table(conn)
 	ensure_wrestler_history_table(conn)
