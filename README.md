@@ -26,6 +26,22 @@ The project uses environment variables to configure which wrestling organization
 
 The database will be created at `output/trackwrestling_{acronym}.db` (lowercase).
 
+# GOVERNING_BODY_ID=38
+# GOVERNING_BODY_ACRONYM=NYSPHSAA
+# GOVERNING_BODY_NAME=New York State Public High School Athletic Association
+
+# GOVERNING_BODY_ID=230728132
+# GOVERNING_BODY_ACRONYM=NVWF
+# GOVERNING_BODY_NAME=Northern Virginia Wrestling Federation
+
+GOVERNING_BODY_ID=52
+GOVERNING_BODY_ACRONYM=VHSL
+GOVERNING_BODY_NAME=Virginia High School League
+
+# GOVERNING_BODY_ID=253734046
+# GOVERNING_BODY_ACRONYM=VA_USA
+# GOVERNING_BODY_NAME=Virginia USA Wrestling
+
 ## Usage
 
 ### Scrape Tournaments

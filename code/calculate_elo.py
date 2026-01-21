@@ -311,7 +311,7 @@ def k_components(
 	loser_points: Optional[int],
 	fall_time: Optional[str],
 ) -> Tuple[float, float, float, float, Optional[int], Optional[int]]:
-	base_k = 32.0
+	base_k = 48.0  # Increased from 32 for more aggressive rating changes
 	dt = (decision_type or "").lower()
 	dc = (decision_code or "").upper()
 
@@ -331,28 +331,28 @@ def k_components(
 	type_mult = 1.0
 	mov_mult = 1.0
 
-	# Tech/Major/SV/OT get a slight base boost
+	# Tech/Major/SV/OT get a bigger base boost
 	if "tech" in dt or dc.startswith("TF") or "major" in dt or dc.startswith("MD") or dc.startswith("SV") or dc in ("OT", "UTB"):
-		type_mult = 1.10
+		type_mult = 1.30  # Increased from 1.10
 		if margin is not None:
-			# 3% per point, capped at +35%
-			mov_mult = 1.0 + min(0.35, 0.03 * margin)
+			# 5% per point, capped at +60% (more aggressive)
+			mov_mult = 1.0 + min(0.60, 0.05 * margin)
 	# Regular decisions
 	elif "dec" in dt or dc == "DEC" or "decision" in dt:
 		type_mult = 1.00
 		if margin is not None:
-			# 3% per point, capped at +30%
-			mov_mult = 1.0 + min(0.30, 0.03 * margin)
+			# 4% per point, capped at +50% (more aggressive)
+			mov_mult = 1.0 + min(0.50, 0.04 * margin)
 	# Falls, forfeits, defaults: treat as big wins; earlier time -> bigger boost
 	if "fall" in dt or dc in ("FALL", "PIN", "FF", "FOR", "DEF"):
-		# Base big-win multiplier
-		# Add a quickness component: map fall time in [0, FALL_REF_SEC] to [1.50, 1.25]
+		# Much higher multiplier for falls - reward dominance
+		# Add a quickness component: map fall time in [0, FALL_REF_SEC] to [2.25, 1.75]
 		FALL_REF_SEC = 180  # reference period length (3 minutes) for scaling
 		sec = _parse_fall_time_to_seconds(fall_time)
-		quick_mult = 1.25
+		quick_mult = 1.75  # Increased base from 1.25
 		if sec is not None:
 			x = max(0.0, min(1.0, 1.0 - (sec / float(FALL_REF_SEC))))
-			quick_mult = 1.25 + 0.25 * x  # in [1.25, 1.50]
+			quick_mult = 1.75 + 0.50 * x  # in [1.75, 2.25] - much higher range
 		# For falls, ignore mov_mult and type_mult; use quick_mult
 		return base_k * quick_mult, 1.0, 1.0, quick_mult, margin, sec
 
@@ -568,16 +568,19 @@ def run() -> None:
 		# Expected and K
 		ea = expected_score(ra, rb)
 		k, t_mult, m_mult, q_mult, margin, fsec = k_components(d_type, d_code, wpts, lpts, ftime)
-		# Dampening multiplier based on how expected the outcome is (winner expected -> reduce K)
-		# Use symmetric multiplier for both sides to preserve zero-sum.
-		# When ea is high (>0.75), reduce K up to ~50%; when ea ~0.5, no reduction; when ea low (<0.25), slight boost up to ~10%.
+		# Aggressive multiplier based on how expected the outcome is
+		# Big upsets (low ea for winner) get MUCH larger swings
+		# Expected outcomes (high ea) get reduced K to prevent runaway leaders
 		k_expected_mult = 1.0
-		if ea >= 0.75:
-			# Linear from 0.75..1.00 -> 1.0..0.5
-			k_expected_mult = max(0.5, 1.0 - 2.0 * (ea - 0.75))
+		if ea >= 0.80:
+			# Linear from 0.80..1.00 -> 1.0..0.3 (reduce even more for heavy favorites)
+			k_expected_mult = max(0.3, 1.0 - 3.5 * (ea - 0.80))
 		elif ea <= 0.25:
-			# Linear from 0.25..0.0 -> 1.0..1.10 (small boost)
-			k_expected_mult = min(1.10, 1.0 + 0.4 * (0.25 - ea))
+			# Linear from 0.25..0.0 -> 1.0..2.5 (HUGE boost for big upsets)
+			k_expected_mult = min(2.5, 1.0 + 6.0 * (0.25 - ea))
+		elif ea <= 0.40:
+			# Linear from 0.40..0.25 -> 1.0..1.0 (moderate boost for upsets)
+			k_expected_mult = 1.0 + 1.5 * (0.40 - ea)
 		# Apply expected multiplier
 		k_adj = k * k_expected_mult
 		rd_order = round_sort_key(rdetail)
@@ -727,6 +730,8 @@ def run() -> None:
 			decision_code=d_code,
 			margin=margin_val,
 		)
+		# Reduce close-loss bonus impact since we have more aggressive upset multipliers
+		bonus = bonus * 0.5  # Cut close-loss bonus in half
 		s_w = 1.0 - bonus
 		s_l = 0.0 + bonus
 		delta_a = k_adj * (s_w - ea)

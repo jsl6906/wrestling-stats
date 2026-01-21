@@ -20,6 +20,8 @@ Notes:
 CLI examples (run with uv):
 - uv run python -m code.scrape_tournaments --start-date 01/01/2024 --end-date 12/31/2024 --max-tournaments 50
 - uv run python -m code.scrape_tournaments --start-date 09/01/2024 --end-date 06/30/2025
+- uv run python -m code.scrape_tournaments --lookback-weeks 2  # Last 2 weeks
+- uv run python -m code.scrape_tournaments --lookback-weeks 4 --max-tournaments 25  # Last 4 weeks, limit 25 tournaments
 """
 
 from __future__ import annotations
@@ -77,11 +79,10 @@ TOURNAMENT_TYPE_NAMES = {
 # Tournaments to exclude from scraping (add event_ids here as needed)
 # Example reasons: incomplete data, parsing issues, test events, etc.
 EXCLUDED_TOURNAMENT_IDS = [
-    # Add event IDs here as strings, e.g.:
-    # "12345",  # Reason: incomplete bracket
-    # "67890",  # Reason: test tournament
+    "946884132", #'2026 NVWF Sample Scramble'
+    "945221132", #'2025-26 NVWF Sample Scramble'
+    "877838132", #'2025 NVWF Sample Scramble'
 ]
-
 
 def _get_timestamp() -> str:
     """Generate TIM parameter (milliseconds since epoch)."""
@@ -403,7 +404,7 @@ def _parse_pagination_info(html: str) -> Tuple[int, int, int]:
     """
     Parse pagination info from HTML response.
     
-    Looks for pattern like "1 - 30 of 160" in dataGridNextPrev div.
+    Looks for pattern like "1 - 30 aof 160" in dataGridNextPrev div.
     
     Returns:
         Tuple of (start_index, end_index, total_count)
@@ -568,58 +569,11 @@ def build_session_urls(event_id: str, event_type: int) -> Tuple[str, str]:
     return verify_url, round_results_url
 
 
-def parse_dual_meet_charts(page) -> List[Tuple[str, str, str]]:
+def _get_selector_options(page, selector_id: str) -> List[Tuple[str, str]]:
     """
-    Parse dual meet chart/pool selection links from the page.
-    
-    Some dual meets have an intermediate page where you select a chart/pool
-    before getting to the bout selector.
-    
-    Returns list of (chart_id, chart_name, chart_href) tuples, e.g.:
-    [("265342132", "Getem Services Black & Blue", "DualMeetWizard.jsp?..."), ...]
-    """
-    import re
-    
-    charts: List[Tuple[str, str, str]] = []
-    
-    # Look for ul.top-links with DualMeetWizard.jsp links
-    for fr in [page] + list(page.frames):
-        try:
-            # Check for the chart selection page pattern
-            chart_links = fr.locator('ul.top-links a[href*="DualMeetWizard.jsp"]')
-            count = chart_links.count()
-            
-            if count > 0:
-                logger.debug("Found %d chart links in frame", count)
-                for i in range(count):
-                    try:
-                        link = chart_links.nth(i)
-                        href = link.get_attribute("href") or ""
-                        name = (link.inner_text() or "").strip()
-                        
-                        # Extract chartId from href
-                        chart_id_match = re.search(r'chartId=(\d+)', href)
-                        chart_id = chart_id_match.group(1) if chart_id_match else f"chart_{i}"
-                        
-                        if name:
-                            charts.append((chart_id, name, href))
-                    except Exception:
-                        continue
-                
-                if charts:
-                    return charts
-        except Exception:
-            continue
-    
-    return charts
-
-
-def parse_dual_meet_bouts(page) -> List[Tuple[str, str]]:
-    """
-    Parse dual meet bout options from the boutNumberBox selector.
-    
-    Returns list of (bout_value, bout_label) tuples, e.g.:
-    [("N.1", "1.  Woodgrove vs Dominion"), ("N.2", "2.  McLean vs Briar Woods"), ...]
+    Generic helper to extract options from a select element.
+    Returns list of (value, label) tuples.
+    Checks both main page and frames.
     """
     from playwright.sync_api import TimeoutError as PWTimeout
 
@@ -638,51 +592,26 @@ def parse_dual_meet_bouts(page) -> List[Tuple[str, str]]:
             out.append((value, label))
         return out
 
-    # Check frames first (most common location for dual meets)
-    for fr in page.frames:
+    # Check all frames
+    for fr in [page] + list(page.frames):
         try:
-            sel = fr.locator("select#boutNumberBox")
-            # Quick check if it exists before waiting
+            sel = fr.locator(f"select#{selector_id}")
             if sel.count() > 0:
-                bouts = _extract_from_select(sel)
-                logger.debug("boutNumberBox found in frame; options=%s", len(bouts))
-                return bouts
+                return _extract_from_select(sel)
         except Exception:
             continue
 
-    # Try on the main page (less common, but check anyway)
+    # Try with wait
     try:
-        select = page.locator("select#boutNumberBox")
-        # Quick check first
-        if select.count() > 0:
-            bouts = _extract_from_select(select)
-            logger.debug("boutNumberBox found on page; options=%s", len(bouts))
-            return bouts
+        for fr in [page] + list(page.frames):
+            try:
+                sel = fr.locator(f"select#{selector_id}")
+                sel.wait_for(timeout=2000)
+                return _extract_from_select(sel)
+            except Exception:
+                continue
     except Exception:
         pass
-
-    # If not found immediately, wait a bit and try again (page might still be loading)
-    try:
-        select = page.locator("select#boutNumberBox")
-        select.wait_for(timeout=2000)
-        bouts = _extract_from_select(select)
-        logger.debug("boutNumberBox found on page after wait; options=%s", len(bouts))
-        return bouts
-    except PWTimeout:
-        pass
-    except Exception:
-        pass
-
-    # Final attempt: check frames with wait
-    for fr in page.frames:
-        try:
-            sel = fr.locator("select#boutNumberBox")
-            sel.wait_for(timeout=1500)
-            bouts = _extract_from_select(sel)
-            logger.debug("boutNumberBox found in frame after wait; options=%s", len(bouts))
-            return bouts
-        except Exception:
-            continue
 
     return []
 
@@ -843,7 +772,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                 # Step 1: Establish session via VerifyPassword.jsp
                 logger.debug("Establishing session: %s", verify_url)
                 page.goto(verify_url, wait_until="load", timeout=20000)
-                # Wait for any redirects to settle
+                # Wait for any redirects to settle (networkidle may timeout due to ads)
                 try:
                     page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
@@ -852,7 +781,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                 # Step 2: Navigate to RoundResults
                 logger.debug("Loading round results: %s", round_results_url)
                 page.goto(round_results_url, wait_until="load", timeout=15000)
-                # Wait for any redirects to settle (team tournaments redirect to MainFrame.jsp)
+                # Wait for any redirects to settle (networkidle may timeout due to ads)
                 try:
                     page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
@@ -892,12 +821,12 @@ def run_scraper(args: argparse.Namespace) -> None:
                             try:
                                 page.wait_for_load_state("networkidle", timeout=3000)
                             except Exception:
-                                pass
+                                pass  # networkidle may timeout due to ads
                             page.goto(alt_results, wait_until="load", timeout=10000)
                             try:
                                 page.wait_for_load_state("networkidle", timeout=3000)
                             except Exception:
-                                pass
+                                pass  # networkidle may timeout due to ads
 
                             for fr in [page] + list(page.frames):
                                 try:
@@ -916,12 +845,10 @@ def run_scraper(args: argparse.Namespace) -> None:
                             continue
 
                 # If still no round selector, try Dual Meet Results (for team tournaments)
-                # Team tournaments use a different UI - we need to click navigation links
                 if not round_selector_found:
-                    logger.debug("No round selector found, trying to find Dual Meet navigation...")
+                    logger.debug("No round selector found, checking for dual meet format...")
                     
-                    # First, make sure we're in the tournament context
-                    # Navigate to the main tournament page first
+                    # Navigate to main frame to find dual meet navigation
                     type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "teamtournaments")
                     main_url = (
                         f"{BASE_URL}/{type_path}/MainFrame.jsp"
@@ -933,294 +860,121 @@ def run_scraper(args: argparse.Namespace) -> None:
                         try:
                             page.wait_for_load_state("networkidle", timeout=5000)
                         except Exception:
-                            pass
+                            pass  # networkidle may timeout due to ads
                     except Exception as e:
                         logger.debug("Failed to load main frame: %s", e)
                     
-                    # Look for "Results" menu first, then "Dual Meets" or similar links
-                    dual_link_found = False
+                    # Try to navigate to dual meet results
                     for fr in [page] + list(page.frames):
+                        # Click Results link if available
                         try:
-                            # First try clicking Results menu/link
                             results_link = fr.locator('a:has-text("Results")').first
                             if results_link.count() > 0:
-                                logger.debug("Clicking Results link")
                                 results_link.click(timeout=3000)
                                 time.sleep(0.2)
                         except Exception:
                             pass
                         
-                        # Look for dual meet navigation links
+                        # Click dual meet link
                         for link_text in ['Dual Meets', 'Dual Meet', 'Match Results', 'Duals']:
                             try:
                                 link = fr.locator(f'a:has-text("{link_text}")').first
                                 if link.count() > 0 and link.is_visible():
-                                    logger.debug("Found dual meet link: %s", link_text)
+                                    logger.debug("Clicking dual meet link: %s", link_text)
                                     link.click(timeout=5000)
                                     try:
                                         page.wait_for_load_state("networkidle", timeout=5000)
                                     except Exception:
-                                        pass
-                                    dual_link_found = True
+                                        pass  # networkidle may timeout due to ads
+                                    is_dual_meet = True
                                     break
-                            except Exception as e:
-                                logger.debug("Error with link '%s': %s", link_text, str(e)[:50])
+                            except Exception:
                                 continue
-                        if dual_link_found:
+                        if is_dual_meet:
                             break
-
-                    # Check for bout selector in all frames
-                    for fr in [page] + list(page.frames):
-                        try:
-                            if fr.locator("select#boutNumberBox").count() > 0:
-                                is_dual_meet = True
-                                logger.info("Found dual meet bout selector for %s", t.event_id)
-                                break
-                        except Exception:
-                            continue
-                    
-                    # If no bout selector, check for chart selection page
-                    if not is_dual_meet:
-                        charts = parse_dual_meet_charts(page)
-                        if charts:
-                            is_dual_meet = True
-                            logger.info("Found dual meet chart selection page with %d charts for %s", 
-                                       len(charts), t.event_id)
 
                 if not round_selector_found and not is_dual_meet:
                     logger.warning("[event] %s | no round/bout selector found", t.event_id)
                     overall_skipped += 1
                     continue
 
-                # Handle dual meet tournaments (boutNumberBox)
+                # Handle dual meet tournaments
                 if is_dual_meet:
-                    # Check for chart selection page first
-                    charts = parse_dual_meet_charts(page)
-                    
-                    # Store the starting URL for potential re-navigation
-                    starting_dual_url = page.url
-                    logger.debug("Starting dual meet URL: %s", starting_dual_url)
-                    
-                    # If there are charts, iterate through each one
-                    # If no charts, treat as a single "default" chart
-                    chart_list = charts if charts else [("default", "Default", "")]
-                    
                     saved_count = 0
-                    for chart_id, chart_name, chart_href in chart_list:
+                    
+                    # Get bout options from selector
+                    bouts = _get_selector_options(page, "boutNumberBox")
+                    if not bouts:
+                        logger.warning("[event] %s | no bouts found in selector", t.event_id)
+                        overall_skipped += 1
+                        continue
+                    
+                    logger.debug("Found %d bouts for dual meet %s", len(bouts), t.event_id)
+                    
+                    # Iterate through each bout and save raw HTML
+                    for bout_id, bout_label in bouts:
                         try:
-                            # If there's a chart href, we need to click/navigate to it
-                            if chart_href:
-                                logger.info("Navigating to chart: %s (%s)", chart_name, chart_id)
-                                
-                                # Find and click the chart link
-                                chart_link_clicked = False
-                                for fr in [page] + list(page.frames):
-                                    try:
-                                        link = fr.locator(f'a[href*="chartId={chart_id}"]').first
-                                        if link.count() > 0:
-                                            link.click(timeout=5000)
-                                            try:
-                                                page.wait_for_load_state("networkidle", timeout=3000)
-                                            except Exception:
-                                                pass
-                                            chart_link_clicked = True
-                                            break
-                                    except Exception as e:
-                                        logger.debug("Error clicking chart link in frame: %s", e)
-                                        continue
-                                
-                                if not chart_link_clicked:
-                                    logger.warning("Could not click chart link for %s", chart_name)
+                            # Find frame with bout selector
+                            bout_frame = None
+                            for fr in [page] + list(page.frames):
+                                try:
+                                    if fr.locator("select#boutNumberBox").count() > 0:
+                                        bout_frame = fr
+                                        break
+                                except Exception:
                                     continue
                             
-                            # Now look for bouts within this chart
-                            bouts = parse_dual_meet_bouts(page)
-                            if not bouts:
-                                logger.debug("No bouts found for chart %s", chart_name)
-                                # If using charts, go back to chart selection for next chart
-                                if charts:
-                                    page.goto(starting_dual_url, wait_until="load", timeout=15000)
-                                    try:
-                                        page.wait_for_load_state("networkidle", timeout=3000)
-                                    except Exception:
-                                        pass
-                                    time.sleep(1.0)
+                            if not bout_frame:
+                                logger.debug("Could not find bout selector for %s", bout_id)
                                 continue
                             
-                            # Store the current chart URL for re-navigation between bouts
-                            current_chart_url = page.url
-                            logger.debug("Chart URL for re-navigation: %s", current_chart_url)
+                            # Select the bout
+                            bout_frame.locator("select#boutNumberBox").select_option(value=bout_id)
+                            try:
+                                page.wait_for_load_state("networkidle", timeout=3000)
+                            except Exception:
+                                pass  # networkidle may timeout due to ads
                             
-                            for bout_id, bout_label in bouts:
+                            # Wait for content frame to load (DualMeetDetail.jsp or similar)
+                            time.sleep(0.5)  # Give frame time to populate
+                            
+                            # Find frame with the actual data (table.tw-table or section.tw-list)
+                            # Parser expects to find these elements in the HTML
+                            raw_html = None
+                            for fr in page.frames:
                                 try:
-                                    # Create unique round_id including chart context
-                                    if charts:
-                                        unique_round_id = f"chart_{chart_id}_{bout_id}"
-                                        full_label = f"{chart_name} - {bout_label}"
-                                    else:
-                                        unique_round_id = bout_id
-                                        full_label = bout_label
-                                    
-                                    # Find bout selector frame
-                                    bout_frame = None
-                                    for fr in [page] + list(page.frames):
-                                        try:
-                                            if fr.locator("select#boutNumberBox").count() > 0:
-                                                bout_frame = fr
-                                                break
-                                        except Exception:
-                                            continue
-
-                                    if not bout_frame:
-                                        # Try re-navigating to chart page
-                                        if current_chart_url:
-                                            page.goto(current_chart_url, wait_until="load", timeout=15000)
-                                            try:
-                                                page.wait_for_load_state("networkidle", timeout=3000)
-                                            except Exception:
-                                                pass
-                                            # Re-find frame
-                                            for fr in [page] + list(page.frames):
-                                                try:
-                                                    if fr.locator("select#boutNumberBox").count() > 0:
-                                                        bout_frame = fr
-                                                        break
-                                                except Exception:
-                                                    continue
-                                        
-                                    if not bout_frame:
-                                        logger.debug("Could not find bout frame for %s", bout_id)
-                                        continue
-
-                                    # Select bout
-                                    bout_frame.locator("select#boutNumberBox").select_option(value=bout_id)
-                                    time.sleep(0.2)
-
-                                    # Wait for the PageFrame iframe to appear and load its content
-                                    # The iframe starts with src="" and gets populated dynamically
-                                    raw_html = None
-                                    try:
-                                        # First, wait for network to be idle after selection
-                                        try:
-                                            page.wait_for_load_state("networkidle", timeout=3000)
-                                        except Exception:
-                                            pass
-                                        
-                                        # Wait for iframe#PageFrame to exist and have a non-empty src
-                                        detail_frame = None
-                                        max_attempts = 10
-                                        
-                                        for attempt in range(max_attempts):
-                                            # Look for iframe with id="PageFrame" or name="PageFrame"
-                                            for fr in page.frames:
-                                                try:
-                                                    # Check if this frame has the right name/id
-                                                    if hasattr(fr, 'name') and fr.name == 'PageFrame':
-                                                        frame_url = fr.url
-                                                        # Make sure it has actual content (not empty src)
-                                                        if frame_url and frame_url != 'about:blank' and 'DualMeetDetail.jsp' in frame_url:
-                                                            detail_frame = fr
-                                                            logger.debug("Found PageFrame with content: %s", frame_url[:100])
-                                                            break
-                                                except Exception:
-                                                    continue
-                                            
-                                            # Also check by looking for frames with DualMeetDetail.jsp
-                                            if not detail_frame:
-                                                for fr in page.frames:
-                                                    try:
-                                                        frame_url = fr.url
-                                                        if 'DualMeetDetail.jsp' in frame_url:
-                                                            detail_frame = fr
-                                                            logger.debug("Found DualMeetDetail frame: %s", frame_url[:100])
-                                                            break
-                                                    except Exception:
-                                                        continue
-                                            
-                                            if detail_frame:
-                                                break
-                                            
-                                            # Wait shorter, more frequent checks
-                                            if attempt < max_attempts - 1:
-                                                wait_time = 0.2 + (attempt * 0.1)
-                                                logger.debug("PageFrame not ready on attempt %d, waiting %.1fs...", attempt + 1, wait_time)
-                                                time.sleep(wait_time)
-                                        
-                                        if detail_frame:
-                                            # Wait for the frame's content to be ready
-                                            try:
-                                                # Wait for table or section with results
-                                                detail_frame.wait_for_selector("table, section.tw-list", timeout=5000)
-                                            except Exception as e:
-                                                logger.debug("Timeout waiting for content in detail frame: %s", e)
-                                            
-                                            # Try to get just the relevant table/section, not the whole page
-                                            # Look for section.tw-list first (match results section)
-                                            section_loc = detail_frame.locator("section.tw-list").first
-                                            if section_loc.count() > 0:
-                                                raw_html = section_loc.evaluate("el => el.outerHTML")
-                                                logger.debug("Captured section.tw-list HTML (%d chars)", len(raw_html))
-                                            else:
-                                                # Try table with class tw-table
-                                                table_loc = detail_frame.locator("table.tw-table").first
-                                                if table_loc.count() > 0:
-                                                    raw_html = table_loc.evaluate("el => el.outerHTML")
-                                                    logger.debug("Captured table.tw-table HTML (%d chars)", len(raw_html))
-                                                else:
-                                                    # Fallback: get any table with content
-                                                    tables = detail_frame.locator("table[width]")
-                                                    if tables.count() > 0:
-                                                        # Find the largest table (likely has the data)
-                                                        for i in range(tables.count()):
-                                                            try:
-                                                                html = tables.nth(i).evaluate("el => el.outerHTML")
-                                                                if len(html) > 500:  # Has substantial content
-                                                                    raw_html = html
-                                                                    logger.debug("Captured table[width] HTML (%d chars)", len(raw_html))
-                                                                    break
-                                                            except Exception:
-                                                                continue
-                                            
-                                            # Final fallback: get entire frame content
-                                            if not raw_html or len(raw_html) < 100:
-                                                raw_html = detail_frame.content()
-                                                logger.debug("Captured full frame content as fallback (%d chars)", len(raw_html))
-                                        else:
-                                            logger.warning("PageFrame not found after %d attempts for bout %s", max_attempts, bout_id)
-                                    except Exception as e:
-                                        logger.debug("Error capturing detail HTML for bout %s: %s", bout_id, e)
-                                        raw_html = None
-
-                                    if raw_html:
-                                        db.execute(
-                                            """--sql
-                                            INSERT INTO tournament_rounds (event_id, round_id, label, raw_html)
-                                            VALUES (?, ?, ?, ?)
-                                            ON CONFLICT (event_id, round_id) DO UPDATE SET
-                                                label = EXCLUDED.label,
-                                                raw_html = EXCLUDED.raw_html
-                                            """,
-                                            [t.event_id, unique_round_id, full_label, raw_html],
-                                        )
-                                        saved_count += 1
-                                        logger.debug("Saved dual meet bout %s: %s", unique_round_id, full_label)
-
-                                except Exception as e:
-                                    logger.debug("Error saving bout %s: %s", bout_id, e)
+                                    # Check if this frame has the data elements
+                                    if (fr.locator("table.tw-table").count() > 0 or 
+                                        fr.locator("section.tw-list").count() > 0):
+                                        raw_html = fr.content()
+                                        logger.debug("Found data in frame (%d chars)", len(raw_html))
+                                        break
+                                except Exception:
                                     continue
                             
-                            # If using charts, go back to chart selection for next chart
-                            if charts:
-                                page.goto(starting_dual_url, wait_until="load", timeout=15000)
-                                try:
-                                    page.wait_for_load_state("networkidle", timeout=3000)
-                                except Exception:
-                                    pass
-                                
+                            # Fallback to full page if no frame found
+                            if not raw_html:
+                                raw_html = page.content()
+                                logger.debug("Using full page content (%d chars)", len(raw_html))
+                            
+                            # Save to database
+                            db.execute(
+                                """--sql
+                                INSERT INTO tournament_rounds (event_id, round_id, label, raw_html)
+                                VALUES (?, ?, ?, ?)
+                                ON CONFLICT (event_id, round_id) DO UPDATE SET
+                                    label = EXCLUDED.label,
+                                    raw_html = EXCLUDED.raw_html
+                                """,
+                                [t.event_id, bout_id, bout_label, raw_html],
+                            )
+                            saved_count += 1
+                            logger.debug("Saved bout %s: %s", bout_id, bout_label)
+                            
                         except Exception as e:
-                            logger.debug("Error processing chart %s: %s", chart_name, e)
+                            logger.debug("Error saving bout %s: %s", bout_id, e)
                             continue
-
+                    
                     if saved_count > 0:
                         overall_succeeded += 1
                         logger.info(
@@ -1252,6 +1006,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                         try:
                             page.wait_for_load_state("networkidle", timeout=3000)
                         except Exception:
+                            # networkidle can timeout due to ads, but page is usually loaded
                             pass
 
                         # Find round selector frame
@@ -1277,28 +1032,30 @@ def run_scraper(args: argparse.Namespace) -> None:
                         ).first
                         if go_btn.count() > 0:
                             go_btn.click()
-                            # Wait for content to load
                             try:
                                 page.wait_for_load_state("networkidle", timeout=2000)
                             except Exception:
+                                # networkidle can timeout due to ads, but page is usually loaded
                                 pass
 
-                        # Get HTML content
+                        # Find frame with the actual data (section.tw-list)
+                        # Parser expects to find this element in the HTML
                         raw_html = None
-                        for fr in [page] + list(page.frames):
+                        for fr in page.frames:
                             try:
-                                results_loc = fr.locator(
-                                    "#resultsTable, #bracketsTable, #results, "
-                                    "div.results, table.results"
-                                ).first
-                                if results_loc.count() > 0:
-                                    raw_html = results_loc.inner_html()
+                                # Check if this frame has the data elements
+                                if (fr.locator("section.tw-list").count() > 0 or
+                                    fr.locator("table.tw-table").count() > 0):
+                                    raw_html = fr.content()
+                                    logger.debug("Found data in frame (%d chars)", len(raw_html))
                                     break
                             except Exception:
                                 continue
-
+                        
+                        # Fallback to full page if no frame found
                         if not raw_html:
                             raw_html = page.content()
+                            logger.debug("Using full page content (%d chars)", len(raw_html))
 
                         # Save to database
                         db.execute(
@@ -1361,13 +1118,19 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--start-date",
-        default=default_start,
-        help=f"Start date in MM/DD/YYYY format (default: {default_start})",
+        default=None,
+        help=f"Start date in MM/DD/YYYY format (default: {default_start} or calculated from --lookback-weeks)",
     )
     p.add_argument(
         "--end-date",
-        default=default_end,
-        help=f"End date in MM/DD/YYYY format (default: {default_end})",
+        default=None,
+        help=f"End date in MM/DD/YYYY format (default: {default_end} or calculated from --lookback-weeks)",
+    )
+    p.add_argument(
+        "--lookback-weeks",
+        type=int,
+        default=None,
+        help="Number of weeks to look back from today (alternative to --start-date/--end-date). Example: --lookback-weeks 2 for last 2 weeks",
     )
     p.add_argument(
         "--max-tournaments",
@@ -1398,6 +1161,32 @@ def main(argv: Optional[List[str]] = None) -> int:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    # Calculate date range based on lookback-weeks or use explicit dates
+    if args.lookback_weeks is not None:
+        if args.start_date is not None or args.end_date is not None:
+            logger.warning(
+                "Both --lookback-weeks and explicit dates provided. Using --lookback-weeks."
+            )
+        # Calculate dates from lookback weeks
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        start_date = yesterday - timedelta(weeks=args.lookback_weeks)
+        args.start_date = start_date.strftime("%m/%d/%Y")
+        args.end_date = yesterday.strftime("%m/%d/%Y")
+        logger.info(
+            "Using lookback period: %d weeks (from %s to %s)",
+            args.lookback_weeks, args.start_date, args.end_date
+        )
+    else:
+        # Use explicit dates or apply defaults
+        if args.start_date is None:
+            yesterday = date.today() - timedelta(days=1)
+            one_year_ago = yesterday - timedelta(days=365)
+            args.start_date = one_year_ago.strftime("%m/%d/%Y")
+        if args.end_date is None:
+            yesterday = date.today() - timedelta(days=1)
+            args.end_date = yesterday.strftime("%m/%d/%Y")
 
     run_scraper(args)
     return 0

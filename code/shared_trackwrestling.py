@@ -43,14 +43,15 @@ def validate_round_html(html: Optional[str], event_id: str, label: str) -> Tuple
     if len(html) < 1000:
         return False, f"HTML too short ({len(html)} bytes)"
     
-    # Check for cookie consent/error pages (Osano cookie manager)
-    if 'osano-cm-window' in html and '<section' not in html:
-        return False, "appears to be cookie consent page only"
-    
     # Check for required content structures
     has_page_content = bool(re.search(r'<div[^>]+id=["\']pageContent["\']', html, re.I))
     has_tw_list = bool(re.search(r'<section[^>]+class=["\'][^"\']*(tw-list|tw\-list)[^"\'\/]*["\']', html, re.I))
     has_results_table = bool(re.search(r'<(table|div)[^>]+id=["\']?(resultsTable|bracketsTable|results)["\']?', html, re.I))
+    
+    # Check for cookie consent/error pages (Osano cookie manager)
+    # Only reject if it ONLY has osano content and no actual page content
+    if 'osano-cm-window' in html and not (has_page_content or has_tw_list or has_results_table):
+        return False, "appears to be cookie consent page only"
     
     # At least one content structure should be present
     if not (has_page_content or has_tw_list or has_results_table):
