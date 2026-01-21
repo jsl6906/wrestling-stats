@@ -20,7 +20,8 @@ export default {
     name: suffix.toUpperCase(),
     open: true,
     pages: [
-      {name: "Individual Stats", path: `/individual_stats/${suffix}`}
+      {name: "Individual Stats", path: `/individual_stats/${suffix}`},
+      {name: "Leaderboards", path: `/leaderboards/${suffix}`}
     ]
   })),
 
@@ -62,6 +63,7 @@ export default {
     // Yield a path for each suffix
     for (const suffix of suffixes) {
       yield `/individual_stats/${suffix}`;
+      yield `/leaderboards/${suffix}`;
     }
   }
 };

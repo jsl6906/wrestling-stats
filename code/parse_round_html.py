@@ -12,10 +12,12 @@ Parse saved Round Results HTML from tournament_rounds.raw_html into a matches ta
 
 Run with uv:
     uv run python code/parse_round_html.py
+    uv run python code/parse_round_html.py --reparse  # Re-parse all rounds, deleting existing matches
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 from typing import List, Optional, Dict, Any, Tuple
 import re
@@ -92,15 +94,26 @@ def ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     # tournament_rounds is created with full schema by the scraper shared module
 
 
-def fetch_unparsed_round_html(conn: duckdb.DuckDBPyConnection) -> List[tuple]:
-    rows = conn.execute(
-        """--sql
-        SELECT event_id, round_id, label, raw_html
-        FROM tournament_rounds
-        WHERE raw_html IS NOT NULL AND COALESCE(parsed_ok, FALSE) = FALSE
-        ORDER BY event_id, round_id
-        """
-    ).fetchall()
+def fetch_unparsed_round_html(conn: duckdb.DuckDBPyConnection, reparse: bool = False) -> List[tuple]:
+    """Fetch round HTML to parse. If reparse=True, includes already-parsed rounds."""
+    if reparse:
+        rows = conn.execute(
+            """--sql
+            SELECT event_id, round_id, label, raw_html
+            FROM tournament_rounds
+            WHERE raw_html IS NOT NULL
+            ORDER BY event_id, round_id
+            """
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """--sql
+            SELECT event_id, round_id, label, raw_html
+            FROM tournament_rounds
+            WHERE raw_html IS NOT NULL AND COALESCE(parsed_ok, FALSE) = FALSE
+            ORDER BY event_id, round_id
+            """
+        ).fetchall()
     return rows
 
 
@@ -122,6 +135,19 @@ def insert_match(conn: duckdb.DuckDBPyConnection, row: Dict[str, Any]) -> None:
             row.get("winner_points"), row.get("loser_points"), row.get("fall_time"), row.get("bye"),
         ],
     )
+
+
+def delete_matches_for_round(conn: duckdb.DuckDBPyConnection, event_id: str, round_id: str) -> int:
+    """Delete all existing matches for a given round. Returns count of deleted rows."""
+    result = conn.execute(
+        """--sql
+        DELETE FROM matches
+        WHERE event_id = ? AND round_id = ?
+        RETURNING COUNT(*)
+        """,
+        [event_id, round_id],
+    ).fetchone()
+    return result[0] if result else 0
 
 
 def mark_parsed_ok(conn: duckdb.DuckDBPyConnection, event_id: str, round_id: str) -> None:
@@ -539,14 +565,14 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
     return _apply_name_team_conversions(out)
 
 
-def run() -> None:
+def run(reparse: bool = False) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger = logging.getLogger(__name__)
 
     conn = duckdb.connect(str(get_db_path()))
     ensure_schema(conn)
 
-    rows = fetch_unparsed_round_html(conn)
+    rows = fetch_unparsed_round_html(conn, reparse=reparse)
     if not rows:
         logger.info("No unparsed round HTML found.")
         conn.close()
@@ -554,6 +580,12 @@ def run() -> None:
 
     for event_id, round_id, label, raw_html in rows:
         try:
+            # If reparse is enabled, delete existing matches for this round first
+            if reparse:
+                deleted = delete_matches_for_round(conn, event_id, round_id)
+                if deleted > 0:
+                    logger.info("deleted %d existing matches for event=%s round=%s", deleted, event_id, round_id)
+            
             items: List[Tuple[str, str]] = parse_round_html(raw_html)
             saved = 0
             for weight_class, raw_li in items:
@@ -581,4 +613,13 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser(
+        description="Parse saved Round Results HTML from tournament_rounds.raw_html into a matches table."
+    )
+    parser.add_argument(
+        "--reparse",
+        action="store_true",
+        help="Re-parse existing matches: delete all matches for each round before re-parsing the raw HTML"
+    )
+    args = parser.parse_args()
+    run(reparse=args.reparse)
