@@ -36,6 +36,9 @@ jobs:
       - name: Sync uv to get python dependencies
         run: uv sync
 
+      - name: Install Playwright browsers
+        run: uv run playwright install chromium --with-deps
+
       - name: Set up node
         uses: actions/setup-node@v4
         with:
@@ -64,7 +67,7 @@ jobs:
           GOVERNING_BODY_ACRONYM: "NVWF"
           GOVERNING_BODY_NAME: "Northern Virginia Wrestling Federation"
         run: |
-          uv run code/scrape_tournaments.py
+          uv run code/scrape_tournaments.py --lookback-weeks 1
           uv run code/parse_round_html.py
           uv run code/calculate_elo.py
 
@@ -74,7 +77,7 @@ jobs:
           GOVERNING_BODY_ACRONYM: "NYSPHSAA"
           GOVERNING_BODY_NAME: "New York State Public High School Athletic Association"
         run: |
-          uv run code/scrape_tournaments.py
+          uv run code/scrape_tournaments.py --lookback-weeks 1
           uv run code/parse_round_html.py
           uv run code/calculate_elo.py
 
@@ -84,7 +87,7 @@ jobs:
           GOVERNING_BODY_ACRONYM: "VHSL"
           GOVERNING_BODY_NAME: "Virginia High School League"
         run: |
-          uv run code/scrape_tournaments.py
+          uv run code/scrape_tournaments.py --lookback-weeks 1
           uv run code/parse_round_html.py
           uv run code/calculate_elo.py
 
