@@ -20,6 +20,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true # database files use Git LFS
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
@@ -85,6 +87,14 @@ jobs:
           uv run code/scrape_tournaments.py
           uv run code/parse_round_html.py
           uv run code/calculate_elo.py
+
+      - name: Commit and push updated database files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/
+          git diff-index --quiet HEAD || git commit -m "Update database files [skip ci]"
+          git push
 
       - name: Activate venv, execute the data loaders and build the static Observable Framework site
         working-directory: observable-framework-app
