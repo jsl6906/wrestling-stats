@@ -28,15 +28,23 @@ Notes:
   parsed from round_detail (Quarterfinal, Semifinal, Final, Consolation, etc). We default unknowns to mid-range.
 
 Run:
-  uv run python code/calculate_elo.py
+  uv run code/calculate_elo.py                # Incremental: process only new matches
+  uv run code/calculate_elo.py --recalculate  # Full recalculation: delete history and reprocess all
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 from typing import Dict, Optional, Any, List, Tuple
 
 import duckdb
+
+try:
+	from .config import get_db_path
+except ImportError:
+	from config import get_db_path
+
 try:
 	from tqdm.auto import tqdm  # type: ignore
 except Exception:
@@ -305,7 +313,7 @@ def k_components(
 	loser_points: Optional[int],
 	fall_time: Optional[str],
 ) -> Tuple[float, float, float, float, Optional[int], Optional[int]]:
-	base_k = 32.0
+	base_k = 48.0  # Increased from 32 for more aggressive rating changes
 	dt = (decision_type or "").lower()
 	dc = (decision_code or "").upper()
 
@@ -325,28 +333,28 @@ def k_components(
 	type_mult = 1.0
 	mov_mult = 1.0
 
-	# Tech/Major/SV/OT get a slight base boost
+	# Tech/Major/SV/OT get a bigger base boost
 	if "tech" in dt or dc.startswith("TF") or "major" in dt or dc.startswith("MD") or dc.startswith("SV") or dc in ("OT", "UTB"):
-		type_mult = 1.10
+		type_mult = 1.30  # Increased from 1.10
 		if margin is not None:
-			# 3% per point, capped at +35%
-			mov_mult = 1.0 + min(0.35, 0.03 * margin)
+			# 5% per point, capped at +60% (more aggressive)
+			mov_mult = 1.0 + min(0.60, 0.05 * margin)
 	# Regular decisions
 	elif "dec" in dt or dc == "DEC" or "decision" in dt:
 		type_mult = 1.00
 		if margin is not None:
-			# 3% per point, capped at +30%
-			mov_mult = 1.0 + min(0.30, 0.03 * margin)
+			# 4% per point, capped at +50% (more aggressive)
+			mov_mult = 1.0 + min(0.50, 0.04 * margin)
 	# Falls, forfeits, defaults: treat as big wins; earlier time -> bigger boost
 	if "fall" in dt or dc in ("FALL", "PIN", "FF", "FOR", "DEF"):
-		# Base big-win multiplier
-		# Add a quickness component: map fall time in [0, FALL_REF_SEC] to [1.50, 1.25]
+		# Much higher multiplier for falls - reward dominance
+		# Add a quickness component: map fall time in [0, FALL_REF_SEC] to [2.25, 1.75]
 		FALL_REF_SEC = 180  # reference period length (3 minutes) for scaling
 		sec = _parse_fall_time_to_seconds(fall_time)
-		quick_mult = 1.25
+		quick_mult = 1.75  # Increased base from 1.25
 		if sec is not None:
 			x = max(0.0, min(1.0, 1.0 - (sec / float(FALL_REF_SEC))))
-			quick_mult = 1.25 + 0.25 * x  # in [1.25, 1.50]
+			quick_mult = 1.75 + 0.50 * x  # in [1.75, 2.25] - much higher range
 		# For falls, ignore mov_mult and type_mult; use quick_mult
 		return base_k * quick_mult, 1.0, 1.0, quick_mult, margin, sec
 
@@ -465,20 +473,146 @@ def apply_cooldown(
 		return current_rating
 
 
-def fetch_matches_ordered(conn: duckdb.DuckDBPyConnection) -> List[Tuple[Any, ...]]:
+def delete_all_elo_data(conn: duckdb.DuckDBPyConnection, log: logging.Logger) -> Tuple[int, int, int]:
+	"""Delete all Elo data for full recalculation.
+	
+	Returns tuple of (wrestlers_deleted, history_deleted, matches_cleared).
+	"""
+	# Count before deleting
+	wrestler_result = conn.execute("""--sql
+		SELECT COUNT(*) FROM wrestlers
+	""").fetchone()
+	wrestler_count = wrestler_result[0] if wrestler_result else 0
+	
+	history_result = conn.execute("""--sql
+		SELECT COUNT(*) FROM wrestler_history
+	""").fetchone()
+	history_count = history_result[0] if history_result else 0
+	
+	# Count matches that have Elo data
+	matches_result = conn.execute("""--sql
+		SELECT COUNT(*) FROM matches WHERE elo_computed_at IS NOT NULL
+	""").fetchone()
+	matches_with_elo = matches_result[0] if matches_result else 0
+	
+	log.info("Deleting Elo data: %d wrestlers, %d history records, %d matches", 
+			 wrestler_count, history_count, matches_with_elo)
+	
+	# Delete wrestler_history
+	conn.execute("""--sql
+		DELETE FROM wrestler_history
+	""")
+	
+	# Delete wrestlers table
+	conn.execute("""--sql
+		DELETE FROM wrestlers
+	""")
+	
+	# Clear Elo columns on matches
+	conn.execute("""--sql
+		UPDATE matches SET 
+			winner_elo_after = NULL,
+			winner_elo_adjustment = NULL,
+			loser_elo_after = NULL,
+			loser_elo_adjustment = NULL,
+			elo_computed_at = NULL,
+			elo_sequence = NULL,
+			winner_elo_before = NULL,
+			loser_elo_before = NULL,
+			expected_winner = NULL,
+			expected_loser = NULL,
+			k_applied = NULL,
+			k_type_mult = NULL,
+			k_expected_mult = NULL,
+			k_mov_mult = NULL,
+			k_quick_mult = NULL,
+			margin = NULL,
+			fall_seconds = NULL,
+			round_order = NULL,
+			winner_prev_matches = NULL,
+			loser_prev_matches = NULL
+		WHERE elo_computed_at IS NOT NULL
+	""")
+	
+	conn.commit()
+	return (wrestler_count, history_count, matches_with_elo)
+
+
+def load_existing_wrestlers(conn: duckdb.DuckDBPyConnection) -> Dict[str, Dict[str, Any]]:
+	"""Load existing wrestler data from the database for incremental processing.
+	
+	Returns a dict keyed by wrestler name with current stats.
+	"""
 	rows = conn.execute(
 		"""--sql
-	 SELECT m.rowid, m.event_id, m.round_id, m.weight_class, m.winner_name, m.loser_name,
-		 m.decision_type, m.decision_type_code, m.round_detail,
-		 m.winner_points, m.loser_points, m.fall_time,
-		 m.winner_team, m.loser_team,
-			   t.start_date
-		FROM matches m
-		JOIN tournaments t ON t.event_id = m.event_id
-		WHERE COALESCE(m.bye, FALSE) = FALSE AND m.winner_name IS NOT NULL AND m.loser_name IS NOT NULL
-		ORDER BY t.start_date NULLS LAST, m.event_id
+		SELECT name, current_elo, matches_played, last_start_date, best_elo, best_date,
+			   wins, wins_fall, losses, losses_fall, dqs, opponent_elo_sum, opponent_elo_count
+		FROM wrestlers
 		"""
 	).fetchall()
+	
+	wrestlers = {}
+	for row in rows:
+		(name, current_elo, matches_played, last_start_date, best_elo, best_date,
+		 wins, wins_fall, losses, losses_fall, dqs, opp_sum, opp_cnt) = row
+		wrestlers[name] = {
+			"rating": current_elo or 1000.0,
+			"played": matches_played or 0,
+			"last_match_date": last_start_date,
+			"best_elo": best_elo or current_elo or 1000.0,
+			"best_date": best_date or last_start_date,
+			"wins": wins or 0,
+			"wins_fall": wins_fall or 0,
+			"losses": losses or 0,
+			"losses_fall": losses_fall or 0,
+			"dqs": dqs or 0,
+			"opp_sum": opp_sum or 0.0,
+			"opp_cnt": opp_cnt or 0,
+		}
+	return wrestlers
+
+
+def fetch_matches_ordered(conn: duckdb.DuckDBPyConnection, incremental: bool = True) -> List[Tuple[Any, ...]]:
+	"""Fetch matches to process, ordered by date and round.
+	
+	Args:
+		conn: DuckDB connection
+		incremental: If True, only fetch unprocessed matches (elo_computed_at IS NULL).
+					 If False, fetch all matches.
+	"""
+	if incremental:
+		# Only fetch matches that haven't been processed yet
+		rows = conn.execute(
+			"""--sql
+		 SELECT m.rowid, m.event_id, m.round_id, m.weight_class, m.winner_name, m.loser_name,
+			 m.decision_type, m.decision_type_code, m.round_detail,
+			 m.winner_points, m.loser_points, m.fall_time,
+			 m.winner_team, m.loser_team,
+				   t.start_date
+			FROM matches m
+			JOIN tournaments t ON t.event_id = m.event_id
+			WHERE COALESCE(m.bye, FALSE) = FALSE 
+			  AND m.winner_name IS NOT NULL 
+			  AND m.loser_name IS NOT NULL
+			  AND m.elo_computed_at IS NULL
+			ORDER BY t.start_date NULLS LAST, m.event_id
+			"""
+		).fetchall()
+	else:
+		# Fetch all matches for full recalculation
+		rows = conn.execute(
+			"""--sql
+		 SELECT m.rowid, m.event_id, m.round_id, m.weight_class, m.winner_name, m.loser_name,
+			 m.decision_type, m.decision_type_code, m.round_detail,
+			 m.winner_points, m.loser_points, m.fall_time,
+			 m.winner_team, m.loser_team,
+				   t.start_date
+			FROM matches m
+			JOIN tournaments t ON t.event_id = m.event_id
+			WHERE COALESCE(m.bye, FALSE) = FALSE AND m.winner_name IS NOT NULL AND m.loser_name IS NOT NULL
+			ORDER BY t.start_date NULLS LAST, m.event_id
+			"""
+		).fetchall()
 	# Sort within event explicitly by round order
 	def _key(r: Tuple[Any, ...]):
 		(rowid, event_id, round_id, weight_class, wname, lname, d_type, d_code, rdetail, wpts, lpts, ftime, wteam, lteam, start_date) = r
@@ -488,37 +622,67 @@ def fetch_matches_ordered(conn: duckdb.DuckDBPyConnection) -> List[Tuple[Any, ..
 	return rows
 
 
-def run() -> None:
+def run(recalculate: bool = False) -> None:
 	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 	log = logging.getLogger(__name__)
 
-	conn = duckdb.connect("output/trackwrestling.db")
+	conn = duckdb.connect(str(get_db_path()))
 	ensure_matches_elo_columns(conn)
 	ensure_wrestlers_table(conn)
 	ensure_wrestler_history_table(conn)
 
-	# Ensure idempotent reruns: clear history so we can reinsert cleanly
-	conn.execute("""--sql
-	DELETE FROM wrestler_history
-	""")
+	if recalculate:
+		# Full recalculation: delete all Elo data and start from scratch
+		log.info("Full recalculation mode: deleting existing Elo data")
+		delete_all_elo_data(conn, log)
+		log.info("Elo data deleted, starting full recalculation")
 
-	rows = fetch_matches_ordered(conn)
+	rows = fetch_matches_ordered(conn, incremental=not recalculate)
 	log.info("matches to process: %s", len(rows))
+	
+	if not rows:
+		log.info("No matches to process")
+		conn.close()
+		return
 
 	# In-memory trackers
-	rating: Dict[str, float] = {}
-	played: Dict[str, int] = {}
-	best_elo: Dict[str, float] = {}
-	best_date_map: Dict[str, Any] = {}
-	last_match_date: Dict[str, Any] = {}  # Track last match date for cooldown
-	wins: Dict[str, int] = {}
-	wins_fall: Dict[str, int] = {}
-	losses: Dict[str, int] = {}
-	losses_fall: Dict[str, int] = {}
-	dqs: Dict[str, int] = {}
-	opp_sum: Dict[str, float] = {}
-	opp_cnt: Dict[str, int] = {}
-	seq: int = 0
+	if recalculate:
+		# Start from scratch
+		rating: Dict[str, float] = {}
+		played: Dict[str, int] = {}
+		best_elo: Dict[str, float] = {}
+		best_date_map: Dict[str, Any] = {}
+		last_match_date: Dict[str, Any] = {}
+		wins: Dict[str, int] = {}
+		wins_fall: Dict[str, int] = {}
+		losses: Dict[str, int] = {}
+		losses_fall: Dict[str, int] = {}
+		dqs: Dict[str, int] = {}
+		opp_sum: Dict[str, float] = {}
+		opp_cnt: Dict[str, int] = {}
+		seq: int = 0
+	else:
+		# Load existing wrestler data for incremental update
+		log.info("Incremental mode: loading existing wrestler data")
+		wrestlers = load_existing_wrestlers(conn)
+		rating: Dict[str, float] = {name: w["rating"] for name, w in wrestlers.items()}
+		played: Dict[str, int] = {name: w["played"] for name, w in wrestlers.items()}
+		best_elo: Dict[str, float] = {name: w["best_elo"] for name, w in wrestlers.items()}
+		best_date_map: Dict[str, Any] = {name: w["best_date"] for name, w in wrestlers.items()}
+		last_match_date: Dict[str, Any] = {name: w["last_match_date"] for name, w in wrestlers.items()}
+		wins: Dict[str, int] = {name: w["wins"] for name, w in wrestlers.items()}
+		wins_fall: Dict[str, int] = {name: w["wins_fall"] for name, w in wrestlers.items()}
+		losses: Dict[str, int] = {name: w["losses"] for name, w in wrestlers.items()}
+		losses_fall: Dict[str, int] = {name: w["losses_fall"] for name, w in wrestlers.items()}
+		dqs: Dict[str, int] = {name: w["dqs"] for name, w in wrestlers.items()}
+		opp_sum: Dict[str, float] = {name: w["opp_sum"] for name, w in wrestlers.items()}
+		opp_cnt: Dict[str, int] = {name: w["opp_cnt"] for name, w in wrestlers.items()}
+		# Get the highest elo_sequence to continue from
+		max_seq_result = conn.execute("""--sql
+			SELECT COALESCE(MAX(elo_sequence), 0) FROM matches
+		""").fetchone()
+		seq: int = max_seq_result[0] if max_seq_result else 0
+		log.info("Loaded %d wrestlers, starting from sequence %d", len(wrestlers), seq)
 
 	def _vals(name: str, team: Optional[str], opp_name: Optional[str], last_adj: float) -> list:
 		w = wins.get(name, 0)
@@ -562,16 +726,19 @@ def run() -> None:
 		# Expected and K
 		ea = expected_score(ra, rb)
 		k, t_mult, m_mult, q_mult, margin, fsec = k_components(d_type, d_code, wpts, lpts, ftime)
-		# Dampening multiplier based on how expected the outcome is (winner expected -> reduce K)
-		# Use symmetric multiplier for both sides to preserve zero-sum.
-		# When ea is high (>0.75), reduce K up to ~50%; when ea ~0.5, no reduction; when ea low (<0.25), slight boost up to ~10%.
+		# Aggressive multiplier based on how expected the outcome is
+		# Big upsets (low ea for winner) get MUCH larger swings
+		# Expected outcomes (high ea) get reduced K to prevent runaway leaders
 		k_expected_mult = 1.0
-		if ea >= 0.75:
-			# Linear from 0.75..1.00 -> 1.0..0.5
-			k_expected_mult = max(0.5, 1.0 - 2.0 * (ea - 0.75))
+		if ea >= 0.80:
+			# Linear from 0.80..1.00 -> 1.0..0.3 (reduce even more for heavy favorites)
+			k_expected_mult = max(0.3, 1.0 - 3.5 * (ea - 0.80))
 		elif ea <= 0.25:
-			# Linear from 0.25..0.0 -> 1.0..1.10 (small boost)
-			k_expected_mult = min(1.10, 1.0 + 0.4 * (0.25 - ea))
+			# Linear from 0.25..0.0 -> 1.0..2.5 (HUGE boost for big upsets)
+			k_expected_mult = min(2.5, 1.0 + 6.0 * (0.25 - ea))
+		elif ea <= 0.40:
+			# Linear from 0.40..0.25 -> 1.0..1.0 (moderate boost for upsets)
+			k_expected_mult = 1.0 + 1.5 * (0.40 - ea)
 		# Apply expected multiplier
 		k_adj = k * k_expected_mult
 		rd_order = round_sort_key(rdetail)
@@ -721,6 +888,8 @@ def run() -> None:
 			decision_code=d_code,
 			margin=margin_val,
 		)
+		# Reduce close-loss bonus impact since we have more aggressive upset multipliers
+		bonus = bonus * 0.5  # Cut close-loss bonus in half
 		s_w = 1.0 - bonus
 		s_l = 0.0 + bonus
 		delta_a = k_adj * (s_w - ea)
@@ -880,5 +1049,14 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-	run()
+	parser = argparse.ArgumentParser(
+		description="Compute Elo ratings for wrestlers across all matches."
+	)
+	parser.add_argument(
+		"--recalculate",
+		action="store_true",
+		help="Full recalculation: delete all Elo history and reprocess all matches from scratch"
+	)
+	args = parser.parse_args()
+	run(recalculate=args.recalculate)
 

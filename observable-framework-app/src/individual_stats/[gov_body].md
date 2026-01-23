@@ -1,8 +1,8 @@
-# NVWF Individual Wrestler Statistics
+# ${observable.params.gov_body.toUpperCase()} Individual Wrestler Statistics
 
 ```js
-const elo_history_parquet = FileAttachment("./data/elo_history.parquet").parquet();
-const wrestlers_parquet = FileAttachment("./data/wrestlers.parquet").parquet();
+const elo_history_parquet = FileAttachment(`data/elo_history_${observable.params.gov_body}.parquet`).parquet();
+const wrestlers_parquet = FileAttachment(`data/wrestlers_${observable.params.gov_body}.parquet`).parquet();
 ```
 
 ```js
@@ -581,7 +581,7 @@ Orange lines reflect past opponents
 
 ```js
 // Display scope selector for comparison chart
-const displayScopeOptions = ['All NVWF Wrestlers', 'Current Team', 'Opponents'];
+const displayScopeOptions = [`All ${observable.params.gov_body.toUpperCase()} Wrestlers`, 'Current Team', 'Opponents'];
 const displayScope = view(select(displayScopeOptions, {label: "Compare against", value: displayScopeOptions[0]}));
 ```
 
@@ -613,7 +613,7 @@ const allWrestlerData = !activeWrestler ? [] : (() => {
   } else if (displayScope === 'Opponents') {
     filteredData = filteredData.filter(d => opponentNames.has(d.name));
   }
-  // For 'All NVWF Wrestlers', no additional filtering needed
+  // For 'All Wrestlers', no additional filtering needed
   
   return filteredData;
 })();

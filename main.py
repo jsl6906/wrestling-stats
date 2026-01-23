@@ -20,7 +20,7 @@ def _load_scraper_main():
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="wrestling-stats", description="NVWF scraping tools")
+    parser = argparse.ArgumentParser(prog="wrestling-stats", description="TrackWrestling.com scraping tools")
     sub = parser.add_subparsers(dest="cmd")
 
     scrape = sub.add_parser("scrape", help="Scrape TrackWrestling raw HTML")

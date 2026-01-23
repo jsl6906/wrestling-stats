@@ -3,9 +3,8 @@ name: Deploy
 on:
   # Run this workflow whenever a new commit is pushed to main.
   push: {branches: [main]}
-  # Run this workflow once per day, at 10:15 UTC
-  # Since the data is static, no need for schedule runs, only when we commit new data
-  # schedule: [{cron: "15 10 * * *"}]
+  # Run this workflow once per week on Mondaoy, at 10:15 UTC
+  schedule: [{cron: "15 10 * * 1"}]
   # Run this workflow when triggered manually in GitHub’s UI.
   workflow_dispatch: {}
 
@@ -56,6 +55,36 @@ jobs:
           node --version
           echo "NPM: "
           npm --version
+
+      - name: Process NVWF data
+        env:
+          GOVERNING_BODY_ID: "230728132"
+          GOVERNING_BODY_ACRONYM: "NVWF"
+          GOVERNING_BODY_NAME: "Northern Virginia Wrestling Federation"
+        run: |
+          uv run code/scrape_tournaments.py
+          uv run code/parse_round_html.py
+          uv run code/calculate_elo.py
+
+      - name: Process NYSPHSAA data
+        env:
+          GOVERNING_BODY_ID: "38"
+          GOVERNING_BODY_ACRONYM: "NYSPHSAA"
+          GOVERNING_BODY_NAME: "New York State Public High School Athletic Association"
+        run: |
+          uv run code/scrape_tournaments.py
+          uv run code/parse_round_html.py
+          uv run code/calculate_elo.py
+
+      - name: Process VHSL data
+        env:
+          GOVERNING_BODY_ID: "52"
+          GOVERNING_BODY_ACRONYM: "VHSL"
+          GOVERNING_BODY_NAME: "Virginia High School League"
+        run: |
+          uv run code/scrape_tournaments.py
+          uv run code/parse_round_html.py
+          uv run code/calculate_elo.py
 
       - name: Activate venv, execute the data loaders and build the static Observable Framework site
         working-directory: observable-framework-app

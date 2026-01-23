@@ -1,3 +1,15 @@
+"""
+Shared utilities for TrackWrestling scraping.
+
+This module provides:
+- Database helpers for tournament rounds table
+- HTML validation utilities
+- Playwright helpers for round scraping (round selection, navigation within events)
+
+Note: Tournament discovery is now handled via HTTP requests in scrape_tournaments.py.
+This module focuses on the Playwright-based round scraping workflow.
+"""
+
 from __future__ import annotations
 
 import re
@@ -8,22 +20,75 @@ from typing import List, Optional, Tuple, Any
 
 import duckdb
 
-# Shared constants
-BASE_SEARCH_URL = (
-    "https://www.trackwrestling.com/Login.jsp?tName=NVWF&state=&sDate=&eDate=&lastName=&firstName="
-    "&teamName=&sfvString=&city=&gbId=&camps=false"
-)
-
 # Module logger
 logger = logging.getLogger(__name__)
 
 
-def extract_event_id(js_call: str) -> Optional[str]:
-    m = re.search(r"eventSelected\((\d+),", js_call)
-    return m.group(1) if m else None
+# ============================================================================
+# HTML Validation
+# ============================================================================
 
+def validate_round_html(html: Optional[str], event_id: str, label: str) -> Tuple[bool, str]:
+    """
+    Validate captured round HTML to detect incomplete page loads.
+    
+    Returns (is_valid, reason):
+    - (True, "ok") if HTML appears valid
+    - (False, reason) if HTML is invalid/incomplete
+    """
+    if not html or not isinstance(html, str):
+        return False, "empty or non-string HTML"
+    
+    # Check minimum length (incomplete pages are usually very short)
+    if len(html) < 1000:
+        return False, f"HTML too short ({len(html)} bytes)"
+    
+    # Check for required content structures
+    has_page_content = bool(re.search(r'<div[^>]+id=["\']pageContent["\']', html, re.I))
+    has_tw_list = bool(re.search(r'<section[^>]+class=["\'][^"\']*(tw-list|tw\-list)[^"\'\/]*["\']', html, re.I))
+    has_results_table = bool(re.search(r'<(table|div)[^>]+id=["\']?(resultsTable|bracketsTable|results)["\']?', html, re.I))
+    
+    # Check for cookie consent/error pages (Osano cookie manager)
+    # Only reject if it ONLY has osano content and no actual page content
+    if 'osano-cm-window' in html and not (has_page_content or has_tw_list or has_results_table):
+        return False, "appears to be cookie consent page only"
+    
+    # At least one content structure should be present
+    if not (has_page_content or has_tw_list or has_results_table):
+        return False, "missing expected content structures (pageContent, tw-list, or results table)"
+    
+    # Check for common error messages
+    error_patterns = [
+        r'page\s+not\s+found',
+        r'error\s+occurred',
+        r'access\s+denied',
+        r'session\s+expired',
+        r'invalid\s+request',
+    ]
+    for pattern in error_patterns:
+        if re.search(pattern, html, re.I):
+            return False, f"contains error message: {pattern}"
+    
+    # Additional validation: if we have tw-list, check if it has actual content
+    if has_tw_list:
+        # Extract the tw-list section and check if it has weight classes (h2) or matches (li)
+        tw_list_match = re.search(r'<section[^>]+class=["\'][^"\']*(tw-list|tw\-list)[^"\'\/]*["\'][^>]*>(.*?)</section>', html, re.I | re.S)
+        if tw_list_match:
+            section_content = tw_list_match.group(1)
+            has_h2 = '<h2' in section_content
+            has_li = '<li' in section_content
+            if not (has_h2 or has_li):
+                return False, "tw-list section exists but appears empty"
+    
+    return True, "ok"
+
+
+# ============================================================================
+# Database Helpers
+# ============================================================================
 
 def ensure_rounds_table(conn: duckdb.DuckDBPyConnection) -> None:
+    """Ensure the tournament_rounds table exists."""
     conn.execute(
         """--sql
         CREATE TABLE IF NOT EXISTS tournament_rounds (
@@ -39,258 +104,130 @@ def ensure_rounds_table(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def upsert_round(conn: duckdb.DuckDBPyConnection, event_id: str, round_id: str, label: str, raw_html: Optional[str] = None) -> None:
-    # Insert or update label and optionally raw_html
+def upsert_round(
+    conn: duckdb.DuckDBPyConnection,
+    event_id: str,
+    round_id: str,
+    label: str,
+    raw_html: Optional[str] = None,
+    validation_failed: bool = False
+) -> None:
+    """
+    Insert or update a tournament round record.
+    
+    Args:
+        conn: DuckDB connection
+        event_id: Tournament event ID
+        round_id: Round identifier
+        label: Human-readable round label
+        raw_html: Optional captured HTML content
+        validation_failed: If True, sets parsed_ok = FALSE to prevent parsing attempts
+    """
     if raw_html is None:
         conn.execute(
             """--sql
-            INSERT INTO tournament_rounds AS tr (event_id, round_id, label)
-            VALUES (?, ?, ?)
-            ON CONFLICT (event_id, round_id) DO UPDATE SET
-                label = EXCLUDED.label
-            """,
-            [event_id, round_id, label],
-        )
-    else:
-        conn.execute(
-            """--sql
-            INSERT INTO tournament_rounds AS tr (event_id, round_id, label, raw_html)
+            INSERT INTO tournament_rounds AS tr (event_id, round_id, label, parsed_ok)
             VALUES (?, ?, ?, ?)
             ON CONFLICT (event_id, round_id) DO UPDATE SET
                 label = EXCLUDED.label,
-                raw_html = EXCLUDED.raw_html
+                parsed_ok = COALESCE(EXCLUDED.parsed_ok, tr.parsed_ok)
             """,
-            [event_id, round_id, label, raw_html],
+            [event_id, round_id, label, False if validation_failed else None],
+        )
+    else:
+        parsed_ok_value = False if validation_failed else None
+        conn.execute(
+            """--sql
+            INSERT INTO tournament_rounds AS tr (event_id, round_id, label, raw_html, parsed_ok)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (event_id, round_id) DO UPDATE SET
+                label = EXCLUDED.label,
+                raw_html = EXCLUDED.raw_html,
+                parsed_ok = COALESCE(EXCLUDED.parsed_ok, tr.parsed_ok)
+            """,
+            [event_id, round_id, label, raw_html, parsed_ok_value],
         )
 
 
-# Playwright helpers (all use sync API objects passed in)
-def find_tournament_frame(page: Any) -> Optional[Any]:
-    for fr in page.frames:
-        try:
-            cnt = fr.locator('[href*="eventSelected("], [onclick*="eventSelected("]').count()
-            if cnt and cnt > 0:
-                return fr
-        except Exception:
-            continue
-    return None
+# ============================================================================
+# Playwright Helpers - Modal Management
+# ============================================================================
 
-
-def wait_for_tournament_frame(page: Any, timeout_ms: int = 8000) -> Optional[Any]:
-    start = time.time()
-    while (time.time() - start) * 1000 < timeout_ms:
-        fr = find_tournament_frame(page)
-        if fr is not None:
-            return fr
-        time.sleep(0.25)
-    return None
-
-
-def page_event_ids(frame: Any) -> List[str]:
-    ids: List[str] = []
-    for a in frame.locator('[href*="eventSelected("], [onclick*="eventSelected("]').element_handles():
-        js = (a.get_attribute('href') or a.get_attribute('onclick') or '')
-        eid = extract_event_id(js or '')
-        if eid:
-            ids.append(eid)
-    return ids
-
-
-def click_next(frame: Any, page: Any) -> bool:
-    ul = frame.query_selector('ul.tournament-ul')
-    before_html = ul.inner_html() if ul else None
-    before_ids = page_event_ids(frame)
-    advanced = False
+def close_any_modals(page: Any) -> None:
+    """Close any open modals that might block interactions."""
     try:
-        next_all = frame.locator('a[href="javascript:nextTournaments()"], [onclick^="nextTournaments"]').element_handles()
-        clicked = False
-        if next_all:
-            for idx in range(len(next_all) - 1, -1, -1):
-                nh = next_all[idx]
-                try:
-                    visible = nh.evaluate("el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)")
-                    if not visible:
-                        continue
-                    cls = nh.get_attribute('class') or ''
-                    aria = nh.get_attribute('aria-disabled') or ''
-                    if 'disabled' in cls or aria.lower() == 'true':
-                        continue
-                    nh.scroll_into_view_if_needed()
-                    nh.click()
-                    clicked = True
-                    break
-                except Exception:
-                    continue
-        if not clicked:
-            # Try invoking nextTournaments in frame, then on the main page
-            tried = False
-            try:
-                frame.evaluate("nextTournaments()")
-                tried = True
-            except Exception:
-                pass
-            if not tried:
-                try:
-                    page.evaluate("nextTournaments()")
-                except Exception:
-                    pass
-        time.sleep(0.5)
-        start = time.time()
-        while (time.time() - start) < 10.0:
-            fr = wait_for_tournament_frame(page)
-            if fr is None:
-                break
-            ul2 = fr.query_selector('ul.tournament-ul')
-            curr_ids = page_event_ids(fr)
-            if ul and ul2:
-                curr = ul2.inner_html()
-                if (before_html is not None and curr != before_html) or (curr_ids and curr_ids != before_ids):
-                    advanced = True
-                    break
-            time.sleep(0.25)
-    except Exception:
-        advanced = False
-    # As a last resort, if we failed to detect advancement but the list vanished, try reloading the list URL
-    if not advanced:
-        try:
-            fr = find_tournament_frame(page)
-            if fr is None:
-                page.goto(BASE_SEARCH_URL, wait_until="domcontentloaded")
-                return wait_for_tournament_frame(page) is not None
-        except Exception:
-            pass
-    return advanced
-
-
-def return_to_list(page: Any, timeout_ms: int = 8000) -> bool:
-    for _ in range(5):
-        try:
-            fr = find_tournament_frame(page)
-            if fr is not None:
-                return True
-            page.go_back(wait_until="domcontentloaded")
-            time.sleep(0.3)
-        except Exception:
-            pass
-    try:
-        page.goto(BASE_SEARCH_URL, wait_until="domcontentloaded")
-        return wait_for_tournament_frame(page, timeout_ms) is not None
-    except Exception:
-        return False
-
-
-def open_event_by_id(page: Any, event_id: str) -> bool:
-    try:
-        logger.debug("locating event %s from tournaments list; current url=%s", event_id, getattr(page, 'url', None))
+        # Check for close button in any frame or main page
+        close_button = page.locator('i.icon-close[onclick="hideModal()"]').first
+        if close_button.count() > 0 and close_button.is_visible():
+            logger.debug("Closing open modal")
+            close_button.click()
+            time.sleep(0.1)
     except Exception:
         pass
-    seen_pages = 0
-    while True:
-        list_frame = wait_for_tournament_frame(page)
-        if list_frame is None:
-            logger.debug("no tournaments frame; attempting to return to list before searching for %s", event_id)
-            try:
-                if not return_to_list(page):
-                    logger.warning("tournaments frame not found while searching for %s", event_id)
-                    return False
-                # After returning to list, try again
-                list_frame = wait_for_tournament_frame(page)
-                if list_frame is None:
-                    logger.warning("still no tournaments frame after return; %s", event_id)
-                    return False
-            except Exception:
-                logger.warning("exception trying to return to list for %s", event_id)
-                return False
-        anchor = list_frame.locator(
-            f'a[href*="eventSelected({event_id},"], [onclick*="eventSelected({event_id},"]'
-        ).first
-        cnt = 0
-        try:
-            cnt = anchor.count()
-        except Exception:
-            cnt = 0
-        if cnt > 0:
-            try:
-                logger.debug("found event %s anchor; clicking", event_id)
-                anchor.scroll_into_view_if_needed()
-                anchor.click()
-                logger.debug("clicked event %s; new url=%s", event_id, getattr(page, 'url', None))
-                return True
-            except Exception:
-                logger.warning("failed clicking event %s anchor", event_id)
-                return False
-        logger.debug("event %s not on this page; attempting nextTournaments()", event_id)
-        if not click_next(list_frame, page):
-            logger.info("nextTournaments() did not advance while searching for %s", event_id)
-            return False
-        seen_pages += 1
-        if seen_pages > 200:
-            logger.warning("exceeded page search limit for %s", event_id)
-            return False
-
-
-def enter_event(page: Any) -> bool:
-    from playwright.sync_api import TimeoutError as PWTimeout
-
-    # First, try to change dropdown from "Viewer" to "Viewer (classic)" before entering event
+    # Also try calling hideModal() directly
     try:
-        # Look for the specific userType dropdown on page or in frames
-        dropdown_changed = False
-        for frame in [page] + list(page.frames):
+        page.evaluate("if (typeof hideModal === 'function') hideModal();")
+    except Exception:
+        pass
+
+
+# ============================================================================
+# Playwright Helpers - Tournament Type Detection
+# ============================================================================
+
+def detect_tournament_type(page: Any) -> Optional[str]:
+    """Detect tournament type from current page URL and content."""
+    try:
+        current_url = getattr(page, 'url', '') or ''
+        
+        # Check URL path first
+        if '/teamtournaments/' in current_url:
+            return 'teamtournaments'
+        elif '/predefinedtournaments/' in current_url:
+            return 'predefinedtournaments'
+        elif '/opentournaments/' in current_url:
+            return 'opentournaments'
+        
+        # Check all frames for tournament type indicators
+        for fr in [page] + list(page.frames):
             try:
-                # Look specifically for select#userType
-                user_type_select = frame.locator('select#userType')
-                if user_type_select.count() > 0:
-                    logger.debug("found userType dropdown; changing to 'Viewer (classic)'")
-                    
-                    # Select the "Viewer (classic)" option by value="viewer"
-                    try:
-                        user_type_select.select_option(value='viewer')
-                        dropdown_changed = True
-                        logger.debug("changed userType dropdown to 'Viewer (classic)' via value='viewer'")
-                        break
-                    except Exception as e:
-                        logger.warning("failed to select viewer option by value: %s", e)
-                        # Fallback: try by label text
-                        try:
-                            user_type_select.select_option(label='Viewer (classic)')
-                            dropdown_changed = True
-                            logger.debug("changed userType dropdown to 'Viewer (classic)' via label")
-                            break
-                        except Exception as e2:
-                            logger.warning("failed to select viewer option by label: %s", e2)
-                            continue
+                frame_url = getattr(fr, 'url', '') or ''
+                if '/teamtournaments/' in frame_url:
+                    return 'teamtournaments'
+                elif '/predefinedtournaments/' in frame_url:
+                    return 'predefinedtournaments'
+                elif '/opentournaments/' in frame_url:
+                    return 'opentournaments'
                 
-                if dropdown_changed:
-                    break
+                # Check for tournament type in page content
+                content = fr.content()
+                if 'teamtournaments' in content:
+                    return 'teamtournaments'
+                elif 'predefinedtournaments' in content:
+                    return 'predefinedtournaments'
             except Exception:
                 continue
         
-        if dropdown_changed:
-            logger.debug("successfully changed userType dropdown to classic mode")
-        else:
-            logger.debug("userType dropdown not found - may already be set correctly or not present")
-            
-    except Exception as e:
-        logger.warning("error trying to change userType dropdown: %s", e)
+        # Default to opentournaments if no specific type detected
+        return 'opentournaments'
+    except Exception:
+        return None
 
-    try:
-        logger.debug("attempting 'Enter Event' by role button; url=%s", getattr(page, 'url', None))
-        page.get_by_role("button", name="Enter Event").click(timeout=5000)
-        logger.debug("entered event via button; url=%s", getattr(page, 'url', None))
-        return True
-    except PWTimeout:
-        try:
-            logger.debug("attempting 'Enter Event' by input[value=Enter Event]")
-            page.locator('input[type="button"][value="Enter Event"]').first.click(timeout=5000)
-            logger.debug("entered event via input button; url=%s", getattr(page, 'url', None))
-            return True
-        except Exception:
-            logger.warning("failed to click 'Enter Event'")
-            return False
 
+# ============================================================================
+# Playwright Helpers - Round Results Navigation
+# ============================================================================
 
 def goto_round_results(page: Any) -> bool:
+    """
+    Navigate to the Round Results page within an event.
+    
+    Tries multiple strategies:
+    1. Direct anchor click
+    2. Frame anchor search
+    3. Role-based link text
+    4. Session-aware URL construction
+    """
     # 1) Look for direct anchor to RoundResults.jsp on the page
     try:
         link = page.locator('a[href*="RoundResults.jsp"]').first
@@ -298,23 +235,41 @@ def goto_round_results(page: Any) -> bool:
         logger.debug("RoundResults.jsp anchor on page count=%s", cnt)
         if cnt > 0:
             href = link.get_attribute('href')
+            logger.debug("found RoundResults.jsp href: %s", href)
             if href:
                 try:
                     logger.debug("navigating to RoundResults via href: %s", href)
                     page.goto(href, wait_until="domcontentloaded", timeout=8000)
                     logger.debug("navigated to RoundResults; url=%s", getattr(page, 'url', None))
-                    return True
-                except Exception:
-                    pass
+                    
+                    # Verify we got the round selector
+                    for fr in [page] + list(page.frames):
+                        try:
+                            if fr.locator("select#roundIdBox").count() > 0:
+                                logger.debug("verified round selector present")
+                                return True
+                        except Exception:
+                            continue
+                    logger.debug("navigated but no round selector found")
+                except Exception as e:
+                    logger.debug("navigation via href failed: %s", e)
             try:
                 logger.debug("clicking RoundResults anchor")
                 link.click(timeout=4000)
                 logger.debug("clicked RoundResults anchor; url=%s", getattr(page, 'url', None))
-                return True
-            except Exception:
-                pass
-    except Exception:
-        pass
+                
+                # Verify round selector
+                for fr in [page] + list(page.frames):
+                    try:
+                        if fr.locator("select#roundIdBox").count() > 0:
+                            return True
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.debug("clicking RoundResults failed: %s", e)
+    except Exception as e:
+        logger.debug("direct anchor lookup failed: %s", e)
+    
     # 2) Search frames for anchor and navigate using its href (preserves session params)
     try:
         for fr in page.frames:
@@ -342,6 +297,7 @@ def goto_round_results(page: Any) -> bool:
                 continue
     except Exception:
         pass
+    
     # 3) Try link text by role/text as a last attempt
     try:
         logger.debug("trying Round Results by role link text")
@@ -350,6 +306,7 @@ def goto_round_results(page: Any) -> bool:
         return True
     except Exception:
         pass
+    
     # 4) Session-aware fallback: construct RoundResults URL with TIM and twSessionId
     def _extract_from_url(u: str) -> Tuple[Optional[str], Optional[str]]:
         try:
@@ -420,18 +377,93 @@ def goto_round_results(page: Any) -> bool:
 
     tim, sid = _collect_session(page)
     if tim and sid:
-        try:
-            params = {"displayFormatBox": "1", "TIM": tim, "twSessionId": sid}
-            target = "https://www.trackwrestling.com/opentournaments/RoundResults.jsp?" + urlencode(params)
-            logger.debug("navigating to session RoundResults URL: %s", target)
-            page.goto(target, wait_until="domcontentloaded", timeout=8000)
-            logger.debug("navigated to RoundResults with session; url=%s", getattr(page, 'url', None))
-            return True
-        except Exception:
-            logger.warning("failed navigating to session RoundResults URL")
-            return False
-
-    logger.info("unable to determine session params for Round Results navigation")
+        logger.debug("collected session params: TIM=%s, twSessionId=%s...", tim, sid[:10] if sid else None)
+        
+        # Detect tournament type from current page
+        detected_type = detect_tournament_type(page)
+        logger.debug("detected tournament type: %s", detected_type)
+        
+        # Build path priority based on detected type
+        if detected_type == 'teamtournaments':
+            paths_to_try = ['/teamtournaments/', '/predefinedtournaments/', '/opentournaments/']
+        elif detected_type == 'predefinedtournaments':
+            paths_to_try = ['/predefinedtournaments/', '/teamtournaments/', '/opentournaments/']
+        else:
+            paths_to_try = ['/opentournaments/', '/teamtournaments/', '/predefinedtournaments/']
+        
+        for path_type in paths_to_try:
+            try:
+                params = {"displayFormatBox": "1", "TIM": tim, "twSessionId": sid}
+                target = f"https://www.trackwrestling.com{path_type}RoundResults.jsp?" + urlencode(params)
+                logger.debug("navigating to session RoundResults URL: %s", target)
+                page.goto(target, wait_until="domcontentloaded", timeout=10000)
+                logger.debug("navigated to RoundResults with session; url=%s", getattr(page, 'url', None))
+                
+                # Check if we got a valid page with round selector
+                time.sleep(0.4)
+                has_rounds = False
+                for fr in [page] + list(page.frames):
+                    try:
+                        if fr.locator("select#roundIdBox").count() > 0:
+                            has_rounds = True
+                            logger.debug("found round selector in %s", "main page" if fr == page else "frame")
+                            break
+                    except Exception:
+                        continue
+                
+                if has_rounds:
+                    logger.debug("SUCCESS: found round selector with path type: %s", path_type)
+                    return True
+                else:
+                    logger.debug("no round selector found with path type: %s, trying next", path_type)
+            except Exception as e:
+                logger.debug("failed with path type %s: %s", path_type, e)
+                continue
+        
+        logger.warning("failed navigating to session RoundResults URL with all path types (TIM=%s)", tim)
+    else:
+        logger.warning("unable to determine session params (TIM=%s, sid=%s) for Round Results navigation", tim, sid)
+    
+    # Final fallback: try to find Round Results link from current page menu/navigation
+    logger.debug("attempting final fallback: searching for Round Results in navigation menu")
+    try:
+        # Look for navigation menus or tabs
+        for fr in [page] + list(page.frames):
+            try:
+                # Try various selectors for Round Results links
+                selectors = [
+                    'a:has-text("Round Results")',
+                    'a:has-text("Rounds")',
+                    'a[href*="RoundResults"]',
+                    'li:has-text("Round Results") a',
+                    'nav a:has-text("Round Results")',
+                    '.menu a:has-text("Round Results")',
+                    '.navigation a:has-text("Round Results")',
+                ]
+                
+                for selector in selectors:
+                    try:
+                        link = fr.locator(selector).first
+                        if link.count() > 0 and link.is_visible():
+                            logger.debug("found Round Results link with selector: %s", selector)
+                            link.click(timeout=5000)
+                            time.sleep(0.3)
+                            
+                            # Verify round selector appeared
+                            for check_fr in [page] + list(page.frames):
+                                try:
+                                    if check_fr.locator("select#roundIdBox").count() > 0:
+                                        logger.debug("SUCCESS: final fallback worked")
+                                        return True
+                                except Exception:
+                                    continue
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug("final fallback failed: %s", e)
+    
     return False
 
 
@@ -447,6 +479,7 @@ def ensure_round_results_view(page: Any) -> bool:
                 continue
     except Exception:
         pass
+    
     # Try 'Back' controls
     try:
         for fr in [page] + list(page.frames):
@@ -459,17 +492,20 @@ def ensure_round_results_view(page: Any) -> bool:
                 continue
     except Exception:
         pass
+    
     # Try native back
     try:
         page.go_back(wait_until="domcontentloaded")
     except Exception:
         pass
+    
     # Finally, navigate explicitly
     try:
         if goto_round_results(page):
             return True
     except Exception:
         pass
+    
     # Check again
     try:
         for fr in [page] + list(page.frames):
@@ -480,10 +516,20 @@ def ensure_round_results_view(page: Any) -> bool:
                 continue
     except Exception:
         pass
+    
     return False
 
 
+# ============================================================================
+# Playwright Helpers - Round Parsing
+# ============================================================================
+
 def parse_rounds(page: Any) -> List[Tuple[str, str]]:
+    """
+    Parse available rounds from the round selector dropdown.
+    
+    Returns list of (round_id, label) tuples.
+    """
     from playwright.sync_api import TimeoutError as PWTimeout
 
     # Helper to extract from a select locator
@@ -508,6 +554,7 @@ def parse_rounds(page: Any) -> List[Tuple[str, str]]:
         return rounds
     except PWTimeout:
         pass
+    
     # 2) Look through frames
     for fr in page.frames:
         try:
@@ -522,190 +569,5 @@ def parse_rounds(page: Any) -> List[Tuple[str, str]]:
                 return rounds
         except Exception:
             continue
+    
     return []
-
-
-def scrape_rounds_for_event(page: Any, conn: duckdb.DuckDBPyConnection, event_id: str) -> int:
-    logger.info("BEGIN scrape_rounds_for_event event_id=%s url=%s", event_id, getattr(page, 'url', None))
-    if not open_event_by_id(page, event_id):
-        logger.warning("FAIL open_event_by_id for %s", event_id)
-        return -1
-    if not enter_event(page):
-        logger.warning("FAIL enter_event for %s", event_id)
-        return -2
-    if not goto_round_results(page):
-        logger.warning("FAIL goto_round_results for %s", event_id)
-        return -3
-    ensure_rounds_table(conn)
-
-    # Helper: snapshot current results HTML
-    def get_results_snapshot() -> str:
-        try:
-            for fr in page.frames:
-                try:
-                    loc = fr.locator("#resultsTable, #bracketsTable, #results, div.results, table.results").first
-                    if loc.count() > 0:
-                        return loc.inner_html()
-                except Exception:
-                    continue
-            return page.content()
-        except Exception:
-            return ""
-
-    rounds = parse_rounds(page)
-    saved = 0
-    for rid, label in rounds:
-        try:
-            # Skip aggregate/empty
-            if (label or "").strip().lower() == "all rounds" or rid in (None, "", "0"):
-                continue
-            # Find the frame with selector and Go
-            rounds_frame = None
-            select_loc = None
-            btn_go = None
-            for fr in [page] + list(page.frames):
-                try:
-                    sel = fr.locator("select#roundIdBox")
-                    if sel.count() > 0:
-                        rounds_frame = fr
-                        select_loc = sel
-                        btn_go = fr.locator(
-                            'input[type="button"][value="Go"][onclick*="viewSchedule"], '
-                            'input[type="button"][value="Go"], '
-                            'button:has-text("Go")'
-                        ).first
-                        break
-                except Exception:
-                    continue
-            if rounds_frame is None or select_loc is None:
-                logger.warning("no round selector found for event %s; skipping round %s", event_id, label)
-                # Still persist label-only for visibility
-                upsert_round(conn, event_id, rid, label)
-                continue
-
-            before_html = get_results_snapshot()
-            # Select round
-            try:
-                select_loc.select_option(value=rid)
-                logger.debug("selected round %s (%s)", label, rid)
-            except Exception:
-                logger.warning("failed to select round %s (%s) for %s", label, rid, event_id)
-                upsert_round(conn, event_id, rid, label)
-                continue
-            # Trigger viewSchedule via Go or JS
-            triggered = False
-            try:
-                if btn_go and btn_go.count() > 0:
-                    btn_go.click()
-                    triggered = True
-                    logger.debug("clicked Go for %s - %s", event_id, label)
-            except Exception:
-                pass
-            if not triggered:
-                try:
-                    rounds_frame.evaluate("viewSchedule()")
-                    triggered = True
-                    logger.debug("invoked viewSchedule() via JS for %s - %s", event_id, label)
-                except Exception:
-                    logger.warning("could not trigger Go/viewSchedule for %s - %s", event_id, label)
-
-            # Wait for change
-            try:
-                page.wait_for_timeout(300)
-            except Exception:
-                pass
-            for _ in range(40):
-                try:
-                    after_html = get_results_snapshot()
-                    if after_html and after_html != before_html:
-                        break
-                except Exception:
-                    pass
-                try:
-                    page.wait_for_timeout(250)
-                except Exception:
-                    pass
-
-            # Small stabilization wait to ensure content is fully rendered
-            try:
-                page.wait_for_timeout(400)
-            except Exception:
-                pass
-            # Capture HTML (full frame/page content)
-            raw_html = None
-            try:
-                target = None
-                for fr in page.frames:
-                    try:
-                        if fr.locator("#bracketsTable, #resultsTable, #results, div.results, table.results").count() > 0:
-                            target = fr
-                            break
-                    except Exception:
-                        continue
-                if target is None:
-                    target = page
-                # Prefer saving full HTML to ensure #pageContent is present
-                # Brief wait to allow final paint
-                try:
-                    target.wait_for_timeout(150)
-                except Exception:
-                    pass
-                raw_html = target.content()
-            except Exception:
-                raw_html = None
-            # Validate presence of <div id="pageContent"> in captured HTML before saving.
-            # If missing, retry once after a longer wait and re-capture.
-            try:
-                def _has_page_content(html: Optional[str]) -> bool:
-                    return isinstance(html, str) and re.search(r'<div[^>]+id=["\']pageContent["\']', html, re.I) is not None
-
-                ok = _has_page_content(raw_html)
-                if not ok:
-                    logger.debug("pageContent missing; retrying capture after extra wait for %s - %s", event_id, label)
-                    try:
-                        page.wait_for_timeout(800)
-                    except Exception:
-                        pass
-                    # Re-capture
-                    try:
-                        target = None
-                        for fr in page.frames:
-                            try:
-                                if fr.locator("#bracketsTable, #resultsTable, #results, div.results, table.results").count() > 0:
-                                    target = fr
-                                    break
-                            except Exception:
-                                continue
-                        if target is None:
-                            target = page
-                        raw_html_retry = target.content()
-                        if _has_page_content(raw_html_retry):
-                            raw_html = raw_html_retry
-                            ok = True
-                    except Exception:
-                        pass
-
-                if ok:
-                    upsert_round(conn, event_id, rid, label, raw_html)
-                else:
-                    logger.warning("skipping raw_html save: #pageContent not found in captured HTML for %s - %s", event_id, label)
-                    upsert_round(conn, event_id, rid, label)
-            except Exception as e:
-                logger.warning("validation error when checking #pageContent for %s - %s: %s", event_id, label, e)
-                upsert_round(conn, event_id, rid, label)
-            saved += 1
-            # After saving a round, ensure we're back at the Round Results selection
-            try:
-                ensure_round_results_view(page)
-            except Exception:
-                pass
-        except Exception as e:
-            logger.warning("failed round capture %s (%s) for %s: %s", label, rid, event_id, e)
-            # at least persist label
-            try:
-                upsert_round(conn, event_id, rid, label)
-            except Exception:
-                pass
-
-    logger.info("DONE scrape_rounds_for_event event_id=%s rounds=%s saved=%s url=%s", event_id, len(rounds), saved, getattr(page, 'url', None))
-    return len(rounds)
