@@ -18,29 +18,13 @@ Scrape wrestling tournament data from TrackWrestling, parse match results, and c
 
 The project uses environment variables to configure which wrestling organization to scrape. Set these in a `.env` file at the project root:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `GOVERNING_BODY_ID` | TrackWrestling's numeric `gbId` parameter | `38` (NYSPHSAA) |
-| `GOVERNING_BODY_ACRONYM` | Short identifier used in database filenames | `NYSPHSAA` |
-| `GOVERNING_BODY_NAME` | Full display name | `New York State Public High School Athletic Association` |
+| Variable | Description | Example Values |
+|----------|-------------|----------------|
+| `GOVERNING_BODY_ID` | TrackWrestling's numeric `gbId` parameter | `38` (NYSPHSAA)<br>`230728132` (NVWF)<br>`52` (VHSL)<br>`253734046` (VA_USA) |
+| `GOVERNING_BODY_ACRONYM` | Short identifier used in database filenames | `NYSPHSAA`<br>`NVWF`<br>`VHSL`<br>`VA_USA` |
+| `GOVERNING_BODY_NAME` | Full display name | `New York State Public High School Athletic Association`<br>`Northern Virginia Wrestling Federation`<br>`Virginia High School League`<br>`Virginia USA Wrestling` |
 
 The database will be created at `output/trackwrestling_{acronym}.db` (lowercase).
-
-# GOVERNING_BODY_ID=38
-# GOVERNING_BODY_ACRONYM=NYSPHSAA
-# GOVERNING_BODY_NAME=New York State Public High School Athletic Association
-
-# GOVERNING_BODY_ID=230728132
-# GOVERNING_BODY_ACRONYM=NVWF
-# GOVERNING_BODY_NAME=Northern Virginia Wrestling Federation
-
-GOVERNING_BODY_ID=52
-GOVERNING_BODY_ACRONYM=VHSL
-GOVERNING_BODY_NAME=Virginia High School League
-
-# GOVERNING_BODY_ID=253734046
-# GOVERNING_BODY_ACRONYM=VA_USA
-# GOVERNING_BODY_NAME=Virginia USA Wrestling
 
 ## Usage
 
