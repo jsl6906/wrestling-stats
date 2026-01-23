@@ -4,7 +4,7 @@
 
 This project uses **uv** for Python dependency management and virtual environment handling. **Never use `pip` directly** - always use `uv` commands instead. When trying to test implementation use `uv run <script>` to run scripts within the virtual environment. Use `uv add <packagename>` to add new dependencies.
 
-## Duckdb for data access and querying
+## DuckDB for data access and querying
 
 This project utilizes duckdb as the primary mechanism for accessing and querying data. duckdb methods should always be used first when attempting to query data, including local duckdb files, CSV files, postgreSQL database, and other data sources where it is possible.
 

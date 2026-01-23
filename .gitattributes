@@ -1,1 +1,2 @@
+# Store database files in repo as GIT LFS objects, so we don't bloat the repo
 *.db filter=lfs diff=lfs merge=lfs -text
