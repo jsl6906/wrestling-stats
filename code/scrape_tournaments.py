@@ -18,10 +18,10 @@ Notes:
 - This script only scrapes; parsing is handled separately in `parse_round_html.py`.
 
 CLI examples (run with uv):
-- uv run python -m code.scrape_tournaments --start-date 01/01/2024 --end-date 12/31/2024 --max-tournaments 50
-- uv run python -m code.scrape_tournaments --start-date 09/01/2024 --end-date 06/30/2025
-- uv run python -m code.scrape_tournaments --lookback-weeks 2  # Last 2 weeks
-- uv run python -m code.scrape_tournaments --lookback-weeks 4 --max-tournaments 25  # Last 4 weeks, limit 25 tournaments
+- uv run code.scrape_tournaments --start-date 01/01/2024 --end-date 12/31/2024 --max-tournaments 50
+- uv run code.scrape_tournaments --start-date 09/01/2024 --end-date 06/30/2025
+- uv run code.scrape_tournaments --lookback-weeks 2  # Last 2 weeks
+- uv run code.scrape_tournaments --lookback-weeks 4 --max-tournaments 25  # Last 4 weeks, limit 25 tournaments
 """
 
 from __future__ import annotations
@@ -82,6 +82,19 @@ EXCLUDED_TOURNAMENT_IDS = [
     "946884132", #'2026 NVWF Sample Scramble'
     "945221132", #'2025-26 NVWF Sample Scramble'
     "877838132", #'2025 NVWF Sample Scramble'
+    "954887132", #'Patriot District Duals'
+    "940752132", #'Rubber Chicken Girls Dual Invitational'
+    "910340132", #'2025 VHSL Class 6 Region D'
+    "901767132", #'Ava Invitational'
+    "794573132", #'Cody Day Invitational'
+    "706781132", #'JV Liberty District 2023'
+    "687757132", #'David Wells Memorial Dual'
+    "634237132", #'Warrior Invitational'
+    "640373132", #'SED JV
+    "640016132", #'2021 Spartan Slam
+    "554084132", #'Bull Run District Tournament 2020
+    "487220132", #'CANCELLED - Oak Duals
+    "502979132", #'2020 Liberty Duals
 ]
 
 def _get_timestamp() -> str:
@@ -575,8 +588,6 @@ def _get_selector_options(page, selector_id: str) -> List[Tuple[str, str]]:
     Returns list of (value, label) tuples.
     Checks both main page and frames.
     """
-    from playwright.sync_api import TimeoutError as PWTimeout
-
     def _extract_from_select(sel_loc) -> List[Tuple[str, str]]:
         options = sel_loc.locator("option[value]")
         cnt = options.count()
@@ -778,28 +789,65 @@ def run_scraper(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
 
-                # Step 2: Navigate to RoundResults
-                logger.debug("Loading round results: %s", round_results_url)
-                page.goto(round_results_url, wait_until="load", timeout=15000)
-                # Wait for any redirects to settle (networkidle may timeout due to ads)
+                # Dismiss cookie consent dialog if present
                 try:
-                    page.wait_for_load_state("networkidle", timeout=5000)
+                    cookie_button = page.locator(
+                        "button:has-text('Accept'), "
+                        "button:has-text('Dismiss'), "
+                        "button.osano-cm-accept, "
+                        "button.osano-cm-dialog__close"
+                    )
+                    if cookie_button.count() > 0:
+                        cookie_button.first.click()
+                        time.sleep(0.5)
                 except Exception:
-                    pass
+                    pass  # Cookie dialog may not appear
 
-                # Check for round selector (standard tournaments)
+                # Step 2: For team tournaments (type 3), skip RoundResults.jsp as it doesn't exist
+                # Go directly to dual meet handling
+                is_team_tournament = (t.event_type == 3)
                 round_selector_found = False
                 is_dual_meet = False
-                for fr in [page] + list(page.frames):
-                    try:
-                        if fr.locator("select#roundIdBox").count() > 0:
-                            round_selector_found = True
-                            break
-                    except Exception:
-                        continue
 
-                # Try alternative tournament types if needed
-                if not round_selector_found:
+                if is_team_tournament:
+                    logger.debug("Team tournament detected, skipping RoundResults.jsp")
+                    # Navigate to MainFrame to access dual meet results
+                    type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "teamtournaments")
+                    main_url = (
+                        f"{BASE_URL}/{type_path}/MainFrame.jsp"
+                        f"?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}"
+                        f"&tournamentId={t.event_id}"
+                    )
+                    try:
+                        page.goto(main_url, wait_until="load", timeout=15000)
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=5000)
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.debug("Failed to load main frame: %s", e)
+                    is_dual_meet = True  # Assume dual meet format for team tournaments
+                else:
+                    # Step 2: Navigate to RoundResults (for non-team tournaments)
+                    logger.debug("Loading round results: %s", round_results_url)
+                    page.goto(round_results_url, wait_until="load", timeout=15000)
+                    # Wait for any redirects to settle (networkidle may timeout due to ads)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:
+                        pass
+
+                    # Check for round selector (standard tournaments)
+                    for fr in [page] + list(page.frames):
+                        try:
+                            if fr.locator("select#roundIdBox").count() > 0:
+                                round_selector_found = True
+                                break
+                        except Exception:
+                            continue
+
+                # Try alternative tournament types if needed (only for non-team tournaments)
+                if not round_selector_found and not is_team_tournament:
                     logger.debug("Round selector not found, trying alternative types...")
                     for alt_type, alt_path in TOURNAMENT_TYPE_PATHS.items():
                         if alt_type == t.event_type:
@@ -827,6 +875,20 @@ def run_scraper(args: argparse.Namespace) -> None:
                                 page.wait_for_load_state("networkidle", timeout=3000)
                             except Exception:
                                 pass  # networkidle may timeout due to ads
+
+                            # Dismiss cookie consent dialog if present
+                            try:
+                                cookie_button = page.locator(
+                                    "button:has-text('Accept'), "
+                                    "button:has-text('Dismiss'), "
+                                    "button.osano-cm-accept, "
+                                    "button.osano-cm-dialog__close"
+                                )
+                                if cookie_button.count() > 0:
+                                    cookie_button.first.click()
+                                    time.sleep(0.3)
+                            except Exception:
+                                pass
 
                             for fr in [page] + list(page.frames):
                                 try:
@@ -894,7 +956,9 @@ def run_scraper(args: argparse.Namespace) -> None:
                             break
 
                 if not round_selector_found and not is_dual_meet:
-                    logger.warning("[event] %s | no round/bout selector found", t.event_id)
+                    type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
+                    tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
+                    logger.warning("[event] %s | no round/bout selector found | %s", t.event_id, tournament_url)
                     overall_skipped += 1
                     continue
 
@@ -902,10 +966,147 @@ def run_scraper(args: argparse.Namespace) -> None:
                 if is_dual_meet:
                     saved_count = 0
                     
-                    # Get bout options from selector
+                    # First, find all chart/bracket links (segment-track buttons)
+                    # Team tournaments have multiple charts/pools that need to be clicked first
+                    # These are in <ul class="top-links"> with <li class="top-link"> containing <a> with href to DualMeetWizard.jsp?chartId=
+                    chart_links = []
+                    for fr in [page] + list(page.frames):
+                        try:
+                            # Look for links within top-links list that have chartId parameter
+                            links = fr.locator("ul.top-links li.top-link a[href*='chartId=']").all()
+                            if links:
+                                for link in links:
+                                    try:
+                                        href = link.get_attribute("href")
+                                        text = link.inner_text()
+                                        if href and text and 'chartId=' in href:
+                                            chart_links.append((text, href))
+                                    except Exception:
+                                        continue
+                                if chart_links:
+                                    break
+                        except Exception:
+                            continue
+                    
+                    # If we found chart links, we need to iterate through them
+                    # Otherwise, try to get bouts directly
+                    if chart_links:
+                        logger.debug("Found %d chart/bracket links for team tournament", len(chart_links))
+                        
+                        for chart_name, chart_href in chart_links:
+                            logger.debug("Processing chart: %s", chart_name)
+                            
+                            # Click the chart link by finding it in the top-links list
+                            chart_clicked = False
+                            for fr in [page] + list(page.frames):
+                                try:
+                                    # Match by href containing the chartId parameter
+                                    # Extract chartId from href like "DualMeetWizard.jsp?TIM=...&chartId=250162132"
+                                    chart_id_match = re.search(r'chartId=(\d+)', chart_href)
+                                    if chart_id_match:
+                                        chart_id = chart_id_match.group(1)
+                                        link = fr.locator(f"ul.top-links li.top-link a[href*='chartId={chart_id}']").first
+                                        if link.count() > 0:
+                                            link.click(timeout=5000)
+                                            try:
+                                                page.wait_for_load_state("networkidle", timeout=3000)
+                                            except Exception:
+                                                pass
+                                            chart_clicked = True
+                                            break
+                                except Exception:
+                                    continue
+                            
+                            if not chart_clicked:
+                                logger.debug("Failed to click chart link: %s", chart_name)
+                                continue
+                            
+                            # Now get bouts for this chart
+                            bouts = _get_selector_options(page, "boutNumberBox")
+                            if not bouts:
+                                logger.debug("No bouts found for chart: %s", chart_name)
+                                continue
+                            
+                            logger.debug("Found %d bouts for chart %s", len(bouts), chart_name)
+                            
+                            # Process bouts for this chart
+                            for bout_id, bout_label in bouts:
+                                try:
+                                    # Find frame with bout selector
+                                    bout_frame = None
+                                    for fr in [page] + list(page.frames):
+                                        try:
+                                            if fr.locator("select#boutNumberBox").count() > 0:
+                                                bout_frame = fr
+                                                break
+                                        except Exception:
+                                            continue
+                                    
+                                    if not bout_frame:
+                                        logger.debug("Could not find bout selector for %s", bout_id)
+                                        continue
+                                    
+                                    # Select the bout
+                                    bout_frame.locator("select#boutNumberBox").select_option(value=bout_id)
+                                    try:
+                                        page.wait_for_load_state("networkidle", timeout=3000)
+                                    except Exception:
+                                        pass
+                                    
+                                    # Wait for content frame to load
+                                    time.sleep(0.5)
+                                    
+                                    # Find frame with the actual data
+                                    raw_html = None
+                                    for fr in page.frames:
+                                        try:
+                                            if (fr.locator("table.tw-table").count() > 0 or 
+                                                fr.locator("section.tw-list").count() > 0):
+                                                raw_html = fr.content()
+                                                logger.debug("Found data in frame (%d chars)", len(raw_html))
+                                                break
+                                        except Exception:
+                                            continue
+                                    
+                                    if not raw_html:
+                                        raw_html = page.content()
+                                        logger.debug("Using full page content (%d chars)", len(raw_html))
+                                    
+                                    # Save to database with chart-specific round_id
+                                    round_id = f"{chart_name}_{bout_label}".replace(" ", "_")
+                                    db.execute(
+                                        """--sql
+                                        INSERT INTO tournament_rounds (event_id, round_id, label, raw_html)
+                                        VALUES (?, ?, ?, ?)
+                                        ON CONFLICT (event_id, round_id) DO UPDATE SET
+                                            label = EXCLUDED.label,
+                                            raw_html = EXCLUDED.raw_html
+                                        """,
+                                        [t.event_id, round_id, bout_label, raw_html],
+                                    )
+                                    saved_count += 1
+                                    
+                                except Exception as e:
+                                    logger.debug("Error processing bout %s: %s", bout_id, e)
+                                    continue
+                        
+                        if saved_count > 0:
+                            logger.info("[event] %s | saved %d bouts across %d charts", 
+                                      t.event_id, saved_count, len(chart_links))
+                            overall_succeeded += 1
+                        else:
+                            type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
+                            tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
+                            logger.warning("[event] %s | no bouts saved | %s", t.event_id, tournament_url)
+                            overall_skipped += 1
+                        continue
+                    
+                    # No chart links found, try direct bout access
                     bouts = _get_selector_options(page, "boutNumberBox")
                     if not bouts:
-                        logger.warning("[event] %s | no bouts found in selector", t.event_id)
+                        type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
+                        tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
+                        logger.warning("[event] %s | no bouts found in selector | %s", t.event_id, tournament_url)
                         overall_skipped += 1
                         continue
                     
@@ -983,13 +1184,17 @@ def run_scraper(args: argparse.Namespace) -> None:
                         )
                     else:
                         overall_skipped += 1
-                        logger.warning("[event] %s | %s | no bouts saved", t.event_id, t.name)
+                        type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
+                        tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
+                        logger.warning("[event] %s | %s | no bouts saved | %s", t.event_id, t.name, tournament_url)
                     continue  # Move to next tournament
 
                 # Parse rounds from selector (standard tournament flow)
                 rounds = parse_rounds(page)
                 if not rounds:
-                    logger.warning("[event] %s | no rounds found", t.event_id)
+                    type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
+                    tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
+                    logger.warning("[event] %s | no rounds found | %s", t.event_id, tournament_url)
                     overall_skipped += 1
                     continue
 
@@ -1007,6 +1212,20 @@ def run_scraper(args: argparse.Namespace) -> None:
                             page.wait_for_load_state("networkidle", timeout=3000)
                         except Exception:
                             # networkidle can timeout due to ads, but page is usually loaded
+                            pass
+
+                        # Dismiss cookie consent dialog if present
+                        try:
+                            cookie_button = page.locator(
+                                "button:has-text('Accept'), "
+                                "button:has-text('Dismiss'), "
+                                "button.osano-cm-accept, "
+                                "button.osano-cm-dialog__close"
+                            )
+                            if cookie_button.count() > 0:
+                                cookie_button.first.click()
+                                time.sleep(0.3)
+                        except Exception:
                             pass
 
                         # Find round selector frame
@@ -1083,7 +1302,9 @@ def run_scraper(args: argparse.Namespace) -> None:
                     )
                 else:
                     overall_skipped += 1
-                    logger.warning("[event] %s | %s | no rounds saved", t.event_id, t.name)
+                    type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
+                    tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
+                    logger.warning("[event] %s | %s | no rounds saved | %s", t.event_id, t.name, tournament_url)
 
             except Exception as e:
                 overall_skipped += 1
