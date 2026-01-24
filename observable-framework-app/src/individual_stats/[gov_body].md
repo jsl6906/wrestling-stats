@@ -417,8 +417,22 @@ const activeWrestler = (() => {
       } else if (aVal > bVal) {
         comparison = 1;
       } else {
-        // Fallback to formatted name for stable sort
-        comparison = formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
+        // For totalMatches, use wins as tiebreaker, then avgPreElo
+        if (column === 'totalMatches') {
+          const winsDiff = b.wins - a.wins;
+          if (winsDiff !== 0) {
+            return winsDiff; // Return directly, don't apply direction
+          }
+          const eloDiff = b.avgPreElo - a.avgPreElo;
+          if (eloDiff !== 0) {
+            return eloDiff; // Return directly, don't apply direction
+          }
+          // Fallback to formatted name for stable sort
+          return formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
+        } else {
+          // Fallback to formatted name for stable sort
+          comparison = formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
+        }
       }
       
       return direction === 'desc' ? -comparison : comparison;
@@ -519,6 +533,125 @@ const activeWrestler = (() => {
 })()
 ```
 
+## Upsets
+
+```js
+// Calculate biggest upset wins and losses for the selected wrestler
+(() => {
+  const wrap = (html) => {
+    const div = document.createElement("div");
+    div.innerHTML = html.trim();
+    return div.firstChild || div;
+  };
+  
+  if (!activeWrestler) {
+    return wrap(`<div class="empty-state"><h3>Select a wrestler to view upsets</h3><p>Choose a wrestler from the dropdown above to see their biggest upset wins and losses.</p></div>`);
+  }
+  
+  const rowsFor = elo_history.filter(d => d.name === activeWrestler);
+  if (!rowsFor.length) {
+    return wrap(`<div class="empty-state"><h3>No upset data available</h3><p>No match history found for ${formatWrestlerName(activeWrestler)}.</p></div>`);
+  }
+  
+  // Calculate upsets (elo gains and losses)
+  const upsets = rowsFor
+    .map(d => ({
+      opponent_name: d.opponent_name,
+      opponent_team: d.opponent_team,
+      tournament: d.tournament_name ?? d.event_id,
+      date: parseDate(d.start_date_iso ?? d.start_date),
+      decision_type: d.decision_type,
+      role: d.role,
+      pre_elo: toNum(d.pre_elo),
+      post_elo: toNum(d.post_elo),
+      elo_change: toNum(d.post_elo) - toNum(d.pre_elo)
+    }))
+    .filter(d => d.date && Number.isFinite(d.elo_change));
+  
+  // Top 5 upset wins (biggest positive elo changes)
+  const upsetWins = upsets
+    .filter(d => d.elo_change > 0)
+    .sort((a, b) => b.elo_change - a.elo_change)
+    .slice(0, 5);
+  
+  // Top 5 upset losses (biggest negative elo changes)
+  const upsetLosses = upsets
+    .filter(d => d.elo_change < 0)
+    .sort((a, b) => a.elo_change - b.elo_change)
+    .slice(0, 5);
+  
+  const formatDate = (date) => date ? date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '-';
+  
+  const winsRows = upsetWins.map((d, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${createWrestlerLink(d.opponent_name)}${d.opponent_team ? ` (${d.opponent_team})` : ''}</td>
+      <td>${d.decision_type || '-'}</td>
+      <td>+${Math.round(d.elo_change)}</td>
+      <td>${d.tournament || '-'}</td>
+      <td>${formatDate(d.date)}</td>
+    </tr>
+  `).join("");
+  
+  const lossesRows = upsetLosses.map((d, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${createWrestlerLink(d.opponent_name)}${d.opponent_team ? ` (${d.opponent_team})` : ''}</td>
+      <td>${d.decision_type || '-'}</td>
+      <td>${Math.round(d.elo_change)}</td>
+      <td>${d.tournament || '-'}</td>
+      <td>${formatDate(d.date)}</td>
+    </tr>
+  `).join("");
+  
+  const winsTable = upsetWins.length > 0 ? `
+    <h3>Biggest Upset Wins</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th>Opponent</th>
+          <th>Result</th>
+          <th>Elo Gain</th>
+          <th>Tournament</th>
+          <th>Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${winsRows}
+      </tbody>
+    </table>
+  ` : '<h3>Biggest Upset Wins</h3><p><em>No upset wins found.</em></p>';
+  
+  const lossesTable = upsetLosses.length > 0 ? `
+    <h3>Biggest Upset Losses</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th>Opponent</th>
+          <th>Result</th>
+          <th>Elo Loss</th>
+          <th>Tournament</th>
+          <th>Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${lossesRows}
+      </tbody>
+    </table>
+  ` : '<h3>Biggest Upset Losses</h3><p><em>No upset losses found.</em></p>';
+  
+  return wrap(`
+    <div>
+      ${winsTable}
+      <br>
+      ${lossesTable}
+    </div>
+  `);
+})()
+```
+
 ```js
 // Coerce BigInt/strings to Numbers for plotting
 function toNum(v) {
@@ -545,13 +678,50 @@ const series = !activeWrestler ? [] : elo_history
     tournament: d.tournament_name ?? d.event_id,
     round: d.round_label ?? d.round_detail,
     role: d.role,
+    decision_type: d.decision_type,
   }))
   .filter(d => d.date && Number.isFinite(d.seq) && Number.isFinite(d.post_elo))
   .sort((a, b) => a.date - b.date);
+
+// Aggregated series by date for comparison chart (keep last Elo of each day)
+const seriesByDate = !activeWrestler ? [] : (() => {
+  const byDate = new Map();
+  for (const d of series) {
+    const dateStr = d.date.toISOString().split('T')[0];
+    if (!byDate.has(dateStr) || d.seq > byDate.get(dateStr).seq) {
+      byDate.set(dateStr, d);
+    }
+  }
+  return Array.from(byDate.values()).sort((a, b) => a.date - b.date);
+})();
 ```
 
 ## Elo Ratings Over Time
 [What is Elo rating?](#what-is-elo-rating)
+
+```js
+// Generate unique ticks showing one label per date, with simple bucketed thinning
+const dateTicksForSeries = (() => {
+  if (!series.length) return [];
+  const seenDates = new Map();
+  for (const d of series) {
+    const dateStr = d.date.toISOString().split('T')[0];
+    if (!seenDates.has(dateStr)) {
+      seenDates.set(dateStr, d.seq);
+    }
+  }
+  const allTicks = Array.from(seenDates.values());
+  
+  // Simple bucketed thinning
+  const count = allTicks.length;
+  let step = 1;
+  if (count >= 100) step = 5;
+  else if (count >= 50) step = 3;
+  else if (count >= 20) step = 2;
+  
+  return step === 1 ? allTicks : allTicks.filter((_, i) => i % step === 0);
+})();
+```
 
 ```js
 // Line chart of Elo over time for the selected wrestler
@@ -559,7 +729,16 @@ const series = !activeWrestler ? [] : elo_history
   width: 900,
   height: 420,
   marginLeft: 48,
-  x: {axis: null},
+  marginBottom: 50,
+  x: {
+    label: "Date",
+    ticks: dateTicksForSeries,
+    tickFormat: (seq) => {
+      const match = series.find(d => d.seq === seq);
+      return match ? match.date.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: '2-digit'}) : '';
+    },
+    tickRotate: -45
+  },
   y: {label: `Elo (${formatWrestlerName(activeWrestler)})`, grid: true},
   marks: [
   Plot.line(series, {x: "seq", y: "post_elo", curve: "step-after"}),
@@ -569,7 +748,12 @@ const series = !activeWrestler ? [] : elo_history
       tip: true,
       title: d => {
         const ds = d.date ? d.date.toLocaleDateString?.() ?? String(d.date) : "";
-        return `${formatWrestlerName(activeWrestler)}\n${d.tournament} — ${d.round}\nvs ${formatWrestlerName(d.opponent)}\nDate: ${ds}\nElo: ${Math.round(d.post_elo)}`
+        const winLoss = (d.role === 'W' || d.role === 'winner') ? 'Win' : 'Loss';
+        const decisionType = d.decision_type || 'Unknown';
+        const outcome = `${winLoss} by ${decisionType}`;
+        const eloChange = Math.round(d.post_elo - d.pre_elo);
+        const eloChangeStr = eloChange >= 0 ? `+${eloChange}` : `${eloChange}`;
+        return `${formatWrestlerName(activeWrestler)}\n${d.tournament} — ${d.round}\nvs ${formatWrestlerName(d.opponent)}\nDate: ${ds}\nOutcome: ${outcome}\nElo: ${Math.round(d.post_elo)} (${eloChangeStr})`
       }
     })
   ]
@@ -595,11 +779,16 @@ const opponentNames = !activeWrestler ? new Set() : new Set(
 ```
 
 ```js
-// Prepare overlay data based on display scope selection
+// Prepare overlay data based on display scope selection - aggregate by date
 const allWrestlerData = !activeWrestler ? [] : (() => {
   let filteredData = elo_history
-    .map(d => ({ name: d.name, seq: toNum(d.elo_sequence), post_elo: toNum(d.post_elo) }))
-    .filter(d => d.name && Number.isFinite(d.seq) && Number.isFinite(d.post_elo))
+    .map(d => ({ 
+      name: d.name, 
+      date: parseDate(d.start_date_iso ?? d.start_date),
+      post_elo: toNum(d.post_elo),
+      seq: toNum(d.elo_sequence)
+    }))
+    .filter(d => d.name && d.date && Number.isFinite(d.post_elo))
     .filter(d => d.name !== activeWrestler); // Exclude the selected wrestler from background
   
   // Apply display scope filter
@@ -613,9 +802,18 @@ const allWrestlerData = !activeWrestler ? [] : (() => {
   } else if (displayScope === 'Opponents') {
     filteredData = filteredData.filter(d => opponentNames.has(d.name));
   }
-  // For 'All Wrestlers', no additional filtering needed
   
-  return filteredData;
+  // Aggregate by wrestler and date: keep the last Elo value for each wrestler-date combination
+  const aggregated = new Map();
+  for (const d of filteredData) {
+    const dateStr = d.date.toISOString().split('T')[0]; // YYYY-MM-DD
+    const key = `${d.name}|${dateStr}`;
+    if (!aggregated.has(key) || d.seq > aggregated.get(key).seq) {
+      aggregated.set(key, d);
+    }
+  }
+  
+  return Array.from(aggregated.values());
 })();
 ```
 
@@ -626,7 +824,7 @@ const opponentSeries = (() => {
     // When showing only opponents, all data should be styled as opponents
     return allWrestlerData.sort((a, b) => {
       const n = formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
-      return n !== 0 ? n : (a.seq - b.seq);
+      return n !== 0 ? n : (a.date - b.date);
     });
   } else {
     // For other scopes, highlight actual opponents
@@ -634,7 +832,7 @@ const opponentSeries = (() => {
       .filter(d => opponentNames.has(d.name))
       .sort((a, b) => {
         const n = formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
-        return n !== 0 ? n : (a.seq - b.seq);
+        return n !== 0 ? n : (a.date - b.date);
       });
   }
 })();
@@ -649,7 +847,7 @@ const nonOpponentSeries = (() => {
       .filter(d => !opponentNames.has(d.name))
       .sort((a, b) => {
         const n = formatWrestlerName(a.name).localeCompare(formatWrestlerName(b.name));
-        return n !== 0 ? n : (a.seq - b.seq);
+        return n !== 0 ? n : (a.date - b.date);
       });
   }
 })();
@@ -657,56 +855,75 @@ const nonOpponentSeries = (() => {
 
 ```js
 // Endpoint of the selected series for labeling
-const selectedEnd = series.length ? series[series.length - 1] : null;
+const selectedEnd = seriesByDate.length ? seriesByDate[seriesByDate.length - 1] : null;
 ```
 
 ```js
-// Render overlay chart (guard against empty data)
-!activeWrestler ? "Select a wrestler to view comparison with other wrestlers." : (opponentSeries.length || nonOpponentSeries.length || series.length)
+// Render overlay chart (guard against empty data) with date-based x-axis
+!activeWrestler ? "Select a wrestler to view comparison with other wrestlers." : (opponentSeries.length || nonOpponentSeries.length || seriesByDate.length)
   ? (() => {
+      // Create ticks showing only first date of each month
+      const monthTicks = (() => {
+        const allDates = new Set();
+        if (seriesByDate.length) seriesByDate.forEach(d => allDates.add(d.date));
+        if (opponentSeries.length) opponentSeries.forEach(d => allDates.add(d.date));
+        if (nonOpponentSeries.length) nonOpponentSeries.forEach(d => allDates.add(d.date));
+        
+        const sortedDates = Array.from(allDates).sort((a, b) => a - b);
+        const seenMonths = new Set();
+        const firstOfMonth = [];
+        
+        for (const date of sortedDates) {
+          const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+          if (!seenMonths.has(monthKey)) {
+            seenMonths.add(monthKey);
+            firstOfMonth.push(date);
+          }
+        }
+        
+        return firstOfMonth;
+      })();
+      
       const chart = Plot.plot({
         width: 900,
         height: 380,
         marginLeft: 48,
-        x: {axis: null},
+        marginBottom: 50,
+        x: {type: "point", label: "Date", ticks: monthTicks, tickFormat: d => d.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: '2-digit'}), tickRotate: -45},
         y: {label: "Elo", grid: true},
         marks: [
           // Background: non-opponent wrestlers, very faint lines
           Plot.line(nonOpponentSeries, {
-            x: "seq",
+            x: "date",
             y: "post_elo",
             z: "name",
             stroke: "#ccc",
             strokeOpacity: 0.12,
             strokeWidth: 1,
             curve: "step-after",
-            tip: true,
-            title: d => {
-              const url = new URL(window.location);
-              url.searchParams.set('wrestler', d.name);
-              return `${formatWrestlerName(d.name)}\nClick to view: ${url.href}`;
-            }
+            tip: displayScope !== `All ${observable.params.gov_body.toUpperCase()} Wrestlers`,
+            title: displayScope !== `All ${observable.params.gov_body.toUpperCase()} Wrestlers` ? (d => {
+              return `${formatWrestlerName(d.name)}\nDate: ${d.date.toLocaleDateString()}\nElo: ${Math.round(d.post_elo)}`;
+            }) : undefined
           }),
           // Highlighted: opponent wrestlers or all wrestlers in opponents-only view
           Plot.line(opponentSeries, {
-            x: "seq",
+            x: "date",
             y: "post_elo",
             z: "name",
             stroke: "#ff7f0e",
             strokeOpacity: 0.35,
             strokeWidth: 1.5,
             curve: "step-after",
-            tip: true,
-            title: d => {
-              const url = new URL(window.location);
-              url.searchParams.set('wrestler', d.name);
+            tip: displayScope !== `All ${observable.params.gov_body.toUpperCase()} Wrestlers`,
+            title: displayScope !== `All ${observable.params.gov_body.toUpperCase()} Wrestlers` ? (d => {
               const suffix = displayScope === 'Opponents' ? '' : ' (opponent)';
-              return `${formatWrestlerName(d.name)}${suffix}\nClick to view: ${url.href}`;
-            }
+              return `${formatWrestlerName(d.name)}${suffix}\nDate: ${d.date.toLocaleDateString()}\nElo: ${Math.round(d.post_elo)}`;
+            }) : undefined
           }),
           // Halo for selected wrestler line (drawn after background, before foreground)
-          Plot.line(series, {
-            x: "seq",
+          Plot.line(seriesByDate, {
+            x: "date",
             y: "post_elo",
             stroke: "white",
             strokeOpacity: 0.9,
@@ -714,8 +931,8 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
             curve: "step-after"
           }),
           // Foreground selected wrestler line
-          Plot.line(series, {
-            x: "seq",
+          Plot.line(seriesByDate, {
+            x: "date",
             y: "post_elo",
             stroke: "steelblue",
             strokeOpacity: 1,
@@ -726,7 +943,7 @@ const selectedEnd = series.length ? series[series.length - 1] : null;
           ...(selectedEnd
             ? [
                 Plot.text([selectedEnd], {
-                  x: "seq",
+                  x: "date",
                   y: "post_elo",
                   text: () => formatWrestlerName(activeWrestler),
                   dx: -8,
