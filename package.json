@@ -1,0 +1,11 @@
+{
+  "name": "wrestling-stats",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --prefix observable-framework-app",
+    "build": "npm run build --prefix observable-framework-app",
+    "deploy": "npm run deploy --prefix observable-framework-app",
+    "clean": "npm run clean --prefix observable-framework-app"
+  }
+}

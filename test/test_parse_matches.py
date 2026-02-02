@@ -254,6 +254,66 @@ TEST_CASES = [
             "bye": True,
         }
     ),
+    
+    TestCase(
+        name="Name conversion: Mateo Corsini -> Matteo Corsini",
+        input_text="Round 1 - Mateo Corsini (Team A) 5-0 won by decision over James Brown (Team B) 3-2 (Dec 7-2)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "Matteo Corsini",
+            "winner_team": "Team A",
+            "decision_type": "decision",
+            "loser_name": "James Brown",
+            "loser_team": "Team B",
+            "decision_type_code": "Dec",
+            "winner_points": 7,
+            "loser_points": 2,
+        }
+    ),
+    
+    TestCase(
+        name="Nested parentheses in team name",
+        input_text="Round 1 - Ahmed Ghandour (Freedom (South Riding)) 7-4 won by fall over Zachary Abdo (Potomac Falls) 2-4 (Fall 1:23)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "Ahmed Ghandour",
+            "winner_team": "Freedom (South Riding)",
+            "decision_type": "fall",
+            "loser_name": "Zachary Abdo",
+            "loser_team": "Potomac Falls",
+            "decision_type_code": "Fall",
+            "fall_time": "1:23",
+        }
+    ),
+    
+    TestCase(
+        name="Nested parentheses in loser team name",
+        input_text="Prelim - Colton Allison (Louisa County) 1-2 won by fall over Quinn Cauthorne (Patrick Henry (Ashland)) 0-2 (Fall 3:18)",
+        expected={
+            "round_detail": "Prelim",
+            "winner_name": "Colton Allison",
+            "winner_team": "Louisa County",
+            "decision_type": "fall",
+            "loser_name": "Quinn Cauthorne",
+            "loser_team": "Patrick Henry (Ashland)",
+            "decision_type_code": "Fall",
+            "fall_time": "3:18",
+        }
+    ),
+    
+    TestCase(
+        name="Remove '-Forfeit' suffix from loser name",
+        input_text="Cons. Round 3 - Chris Pyle (Roanoke Catholic) 9-7 won by forfeit over Keyanta Robinson-Forfeit (Amherst) 5-8 (For.)",
+        expected={
+            "round_detail": "Cons. Round 3",
+            "winner_name": "Chris Pyle",
+            "winner_team": "Roanoke Catholic",
+            "decision_type": "forfeit",
+            "loser_name": "Keyanta Robinson",
+            "loser_team": "Amherst",
+            "decision_type_code": "For.",
+        }
+    ),
 ]
 
 
