@@ -117,6 +117,16 @@ function formatWrestlerName(name) {
   if (!name || typeof name !== 'string') return name || "-";
   
   const parts = name.trim().split(/\s+/);
+  
+  // Handle hyphenated last names that may have been split (e.g., "Cam Cook -Cash")
+  // Join any part starting with hyphen to the previous part
+  for (let i = parts.length - 1; i > 0; i--) {
+    if (parts[i].startsWith('-')) {
+      parts[i - 1] = parts[i - 1] + parts[i];
+      parts.splice(i, 1);
+    }
+  }
+  
   if (parts.length === 1) {
     return parts[0]; // Single name, return as is
   } else if (parts.length === 2) {

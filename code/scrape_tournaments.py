@@ -52,6 +52,16 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ============================================================================
+# Console Colors
+# ============================================================================
+
+class Colors:
+    """ANSI color codes for console output."""
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    RESET = '\033[0m'
+
+# ============================================================================
 # Constants
 # ============================================================================
 
@@ -95,6 +105,9 @@ EXCLUDED_TOURNAMENT_IDS = [
     "554084132", #'Bull Run District Tournament 2020
     "487220132", #'CANCELLED - Oak Duals
     "502979132", #'2020 Liberty Duals
+    "962259132", #'Battle at the Burgh
+    "940550132", #'SECTION 9 DUALS-D1
+    "938862132", #'Bert Ernst Memorial
 ]
 
 def _get_timestamp() -> str:
@@ -518,7 +531,7 @@ async def discover_tournaments_async(
                 
                 # Safety limit to prevent infinite loops
                 if page_index > 100:
-                    logger.warning("Reached page limit (100), stopping pagination")
+                    logger.warning(f"{Colors.YELLOW}Reached page limit (100), stopping pagination{Colors.RESET}")
                     break
                     
             except httpx.HTTPStatusError as e:
@@ -665,7 +678,7 @@ def run_scraper(args: argparse.Namespace) -> None:
     logger.info("Discovered %d tournaments in %.2fs", len(discovered), discovery_time)
 
     if not discovered:
-        logger.warning("No tournaments found for date range")
+        logger.warning(f"{Colors.YELLOW}No tournaments found for date range{Colors.RESET}")
         return
 
     # 2. Open DuckDB and ensure tables exist
@@ -958,7 +971,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                 if not round_selector_found and not is_dual_meet:
                     type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                     tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
-                    logger.warning("[event] %s | no round/bout selector found | %s", t.event_id, tournament_url)
+                    logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | no round/bout selector found | {tournament_url}{Colors.RESET}")
                     overall_skipped += 1
                     continue
 
@@ -1097,7 +1110,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                         else:
                             type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                             tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
-                            logger.warning("[event] %s | no bouts saved | %s", t.event_id, tournament_url)
+                            logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | no bouts saved | {tournament_url}{Colors.RESET}")
                             overall_skipped += 1
                         continue
                     
@@ -1106,7 +1119,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                     if not bouts:
                         type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                         tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
-                        logger.warning("[event] %s | no bouts found in selector | %s", t.event_id, tournament_url)
+                        logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | no bouts found in selector | {tournament_url}{Colors.RESET}")
                         overall_skipped += 1
                         continue
                     
@@ -1186,7 +1199,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                         overall_skipped += 1
                         type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                         tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
-                        logger.warning("[event] %s | %s | no bouts saved | %s", t.event_id, t.name, tournament_url)
+                        logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | {t.name} | no bouts saved | {tournament_url}{Colors.RESET}")
                     continue  # Move to next tournament
 
                 # Parse rounds from selector (standard tournament flow)
@@ -1194,7 +1207,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                 if not rounds:
                     type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                     tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
-                    logger.warning("[event] %s | no rounds found | %s", t.event_id, tournament_url)
+                    logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | no rounds found | {tournament_url}{Colors.RESET}")
                     overall_skipped += 1
                     continue
 
@@ -1304,11 +1317,11 @@ def run_scraper(args: argparse.Namespace) -> None:
                     overall_skipped += 1
                     type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                     tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
-                    logger.warning("[event] %s | %s | no rounds saved | %s", t.event_id, t.name, tournament_url)
+                    logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | {t.name} | no rounds saved | {tournament_url}{Colors.RESET}")
 
             except Exception as e:
                 overall_skipped += 1
-                logger.error("[event] %s | %s | error: %s", t.event_id, t.name, e)
+                logger.error(f"{Colors.RED}[event] {t.event_id} | {t.name} | error: {e}{Colors.RESET}")
 
         browser.close()
 
@@ -1387,7 +1400,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.lookback_weeks is not None:
         if args.start_date is not None or args.end_date is not None:
             logger.warning(
-                "Both --lookback-weeks and explicit dates provided. Using --lookback-weeks."
+                f"{Colors.YELLOW}Both --lookback-weeks and explicit dates provided. Using --lookback-weeks.{Colors.RESET}"
             )
         # Calculate dates from lookback weeks
         today = date.today()

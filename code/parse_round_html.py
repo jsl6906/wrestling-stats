@@ -312,6 +312,10 @@ NAME_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     (r"\bCarter\s+Van[\s-]?[Dd]yk\b", "Carter Van-Dyk"),
     # Normalize Chaley Pai-Bedell/Pia-Bedell variants to 'Chaley Pai-Bedell'
     (r"\bChaley\s+P[ia]{2}-Bedell\b", "Chaley Pai-Bedell"),
+    # Remove "(correct)" annotation from names
+    (r"\bBlake\s+Rosenbaum\s+\(correct\)\b", "Blake Rosenbaum"),
+    # Remove forfeit/bye suffixes from names (e.g., "John Doe-Forfeit" -> "John Doe")
+    (r"-\s*(?:Forfeit|Bye|DFF|DDQ|Unknown|Forfiet)\b", ""),
     # Remove any digits present in names (e.g., 'John 2 Doe' -> 'John Doe')
     (r"\d+", ""),
 ]
@@ -320,6 +324,7 @@ TEAM_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     (r"\bAlexandria\s+Junior\s+Titans\b", "Alexandria"),
     (r"\bAnnandale\s+Mat\s+Rats\b", "Annandale"),
     (r"\bBraddock\s+Wrestling\s+Club\b", "Braddock"),
+    (r"\bE9\b", "E9 Wrestling"),
     (r"\bE9\s*Wrestling\b|\bE9Wrestling\b", "E9 Wrestling"),
     (r"\bFauquier\s+Wrestling\b", "Fauquier"),
     (r"\bFort\s*Belvoir\b|\bFortBelvoir\b", "Fort Belvoir"),
@@ -336,6 +341,8 @@ TEAM_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     (r"\bPrince\s+William\s+County\s+Wrestling\s+Club\b", "Prince William"),
     (r"\bPrince\s+William\s+Wrestling\s+Club\b", "Prince William"),
     (r"\bPrinceWilliam\b", "Prince William"),
+    (r"\bRangers\b", "Ranger Wrestling Club"),
+    (r"\bScanlan\s+Wrestling\s+Academy\b", "Scanlan"),
     (r"\bScanlon\s+Wrestling\b", "Scanlan"),
     (r"\bSmyrna\s+Wrestling\b", "Smyrna"),
     (r"\bSouth\s+County\s+Athletic\s+Association\b", "South County"),
@@ -654,7 +661,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
         potential_rd, potential_rest = text.split(" - ", 1)
         # Check if the potential round detail looks like an actual round prefix
         rd_lower = potential_rd.lower()
-        if any(keyword in rd_lower for keyword in ["round", "place", "champ", "semi", "quarter", "final", "cons"]):
+        if any(keyword in rd_lower for keyword in ["round", "place", "champ", "semi", "quarter", "final", "cons", "prelim"]):
             out["round_detail"] = potential_rd.strip()
             rest = potential_rest
         else:
