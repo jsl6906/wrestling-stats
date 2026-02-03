@@ -55,6 +55,36 @@ TEST_CASES = [
     ),
     
     TestCase(
+        name="Forfeit Forfeit loser name (should be bye)",
+        input_text="Cons. Round 1 - Vernon Dudley (E. C. Glass) 2-7 won by forfeit over Forfeit Forfeit (Poquoson) 4-8 (For.)",
+        expected={
+            "round_detail": "Cons. Round 1",
+            "winner_name": "Vernon Dudley",
+            "winner_team": "E. C. Glass",
+            "decision_type": "bye",
+            "decision_type_code": "Bye",
+            "loser_name": None,
+            "loser_team": None,
+            "bye": True,
+        }
+    ),
+    
+    TestCase(
+        name="Forfeit Bye loser name (should be bye)",
+        input_text="Quarterfinal - Taylor Misuna (Grassfield High School) 3-0 won by tech fall over Forfeit Bye (Hanover High School) 1-3 (TF-1.5 4:26 (18-3))",
+        expected={
+            "round_detail": "Quarterfinal",
+            "winner_name": "Taylor Misuna",
+            "winner_team": "Grassfield",
+            "decision_type": "bye",
+            "decision_type_code": "Bye",
+            "loser_name": None,
+            "loser_team": None,
+            "bye": True,
+        }
+    ),
+    
+    TestCase(
         name="Double overtime (2-OT)",
         input_text="3rd Place Match - nana utsey (Glen Allen) 17-3 won in double overtime over Kenneth Hamilton (Gloucester) 16-3 (2-OT 7-5)",
         expected={

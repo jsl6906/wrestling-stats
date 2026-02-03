@@ -567,6 +567,23 @@ def _apply_name_team_conversions(out: Dict[str, Any]) -> Dict[str, Any]:
             out["loser_points"] = None
             out["fall_time"] = None
             return out
+        
+        # Check if loser name starts with "Forfeit" (e.g., "Forfeit", "Forfeit Forfeit", "Forfeit Bye") - treat as bye
+        if loser_name_clean.lower().startswith("forfeit"):
+            out["decision_type"] = "bye"
+            out["decision_type_code"] = "Bye"
+            out["bye"] = True
+            out["loser_name"] = None
+            out["loser_team"] = None
+            out["winner_points"] = None
+            out["loser_points"] = None
+            out["fall_time"] = None
+            # Normalize winner name/team before returning
+            if out.get("winner_name"):
+                out["winner_name"] = _normalize_person_name(out["winner_name"])  # type: ignore[arg-type]
+            if out.get("winner_team"):
+                out["winner_team"] = _normalize_team_name(out["winner_team"])  # type: ignore[arg-type]
+            return out
     
     # Check if either participant is "Unknown (Unattached)" - treat as a bye
     winner_is_unknown = (out.get("winner_name") == "Unknown" and out.get("winner_team") == "Unattached")
