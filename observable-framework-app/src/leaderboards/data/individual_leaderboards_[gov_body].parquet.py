@@ -35,8 +35,35 @@ def main() -> None:
 	db_file = Path(output_dir) / f"trackwrestling_{gov_body}.db"
 	
 	if not db_file.exists():
-		log.error("Database file not found: %s", db_file)
-		sys.exit(1)
+		log.warning("Database file not found: %s. Returning empty dataset.", db_file)
+		# Output an empty parquet file
+		import pyarrow as pa
+		import pyarrow.parquet as pq
+		schema = pa.schema([
+			('name', pa.string()),
+			('team', pa.string()),
+			('season', pa.string()),
+			('matches_played', pa.int64()),
+			('wins', pa.int64()),
+			('losses', pa.int64()),
+			('wins_fall', pa.int64()),
+			('highest_elo', pa.float64()),
+			('current_elo', pa.float64()),
+			('current_elo', pa.float64()),
+			('biggest_upset_win', pa.float64()),
+			('upset_event_id', pa.int64()),
+			('upset_date', pa.string()),
+			('upset_tournament_name', pa.string()),
+			('upset_opponent_name', pa.string()),
+			('upset_opponent_team', pa.string()),
+			('upset_result', pa.string()),
+			('win_pct', pa.float64()),
+			('fall_pct', pa.float64())
+		])
+		empty_table = pa.table({field.name: pa.array([], type=field.type) for field in schema})
+		pq.write_table(empty_table, sys.stdout.buffer)
+		sys.stdout.flush()
+		return
 	
 	log.info("Found database: %s", db_file)
 
@@ -115,6 +142,7 @@ def main() -> None:
 	    ws.losses,
 	    ws.wins_fall,
 	    ws.highest_elo,
+	    w.current_elo,
 	    ws.biggest_upset_win,
 	    ud.event_id as upset_event_id,
 	    CAST(ud.start_date AS VARCHAR) as upset_date,
@@ -131,6 +159,7 @@ def main() -> None:
 	      ELSE 0
 	    END as fall_pct
 	  FROM wrestler_stats ws
+	  LEFT JOIN wrestlers w ON ws.name = w.name
 	  LEFT JOIN upset_details ud ON ws.name = ud.name AND ws.team = ud.team AND ws.season = ud.season AND ud.rn = 1
 	  LEFT JOIN tournaments t ON ud.event_id = t.event_id
 	  WHERE ws.matches_played > 0
@@ -142,7 +171,7 @@ def main() -> None:
 	parquet_tmp_name: str | None = None
 	con = None
 	try:
-		con = duckdb.connect(str(db_file))
+		con = duckdb.connect(str(db_file), read_only=True)
 		
 		parquet_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
 		parquet_tmp_name = parquet_tmp.name
@@ -158,8 +187,37 @@ def main() -> None:
 		log.info("Parquet file streamed to stdout successfully")
 		
 	except Exception as e:
-		log.error("Failed to export individual leaderboards: %s", e)
-		sys.exit(1)
+		# Check if error is due to missing table
+		if "wrestler_history" in str(e) or "tournaments" in str(e):
+			log.warning("Required tables not found: %s. Returning empty dataset.", e)
+			# Output empty parquet
+			import pyarrow as pa
+			import pyarrow.parquet as pq
+			schema = pa.schema([
+				('name', pa.string()),
+				('team', pa.string()),
+				('season', pa.string()),
+				('matches_played', pa.int64()),
+				('wins', pa.int64()),
+				('losses', pa.int64()),
+				('wins_fall', pa.int64()),
+				('highest_elo', pa.float64()),
+				('biggest_upset_win', pa.float64()),
+				('upset_event_id', pa.int64()),
+				('upset_date', pa.string()),
+				('upset_tournament_name', pa.string()),
+				('upset_opponent_name', pa.string()),
+				('upset_opponent_team', pa.string()),
+				('upset_result', pa.string()),
+				('win_pct', pa.float64()),
+				('fall_pct', pa.float64())
+			])
+			empty_table = pa.table({field.name: pa.array([], type=field.type) for field in schema})
+			pq.write_table(empty_table, sys.stdout.buffer)
+			sys.stdout.flush()
+		else:
+			log.error("Failed to export individual leaderboards: %s", e)
+			sys.exit(1)
 	finally:
 		try:
 			if parquet_tmp_name:
