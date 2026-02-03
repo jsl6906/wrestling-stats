@@ -199,6 +199,7 @@ function aggregateByWrestler(data) {
         losses: 0,
         wins_fall: 0,
         highest_elo: 0,
+        current_elo: 0,
         biggest_upset_win: 0,
         upset_event_id: null,
         upset_date: null,
@@ -212,6 +213,7 @@ function aggregateByWrestler(data) {
     agg.losses += Number(row.losses) || 0;
     agg.wins_fall += Number(row.wins_fall) || 0;
     agg.highest_elo = Math.max(agg.highest_elo, Number(row.highest_elo) || 0);
+    agg.current_elo = Number(row.current_elo) || 0;
     
     // Track biggest upset and its details
     const upsetValue = Number(row.biggest_upset_win) || 0;
@@ -513,8 +515,8 @@ const teamStats = selectedSeason === "All Seasons"
       <td>${createWrestlerLink(d.name, observable.params.gov_body)}</td>
       <td>${d.team || '-'}</td>
       <td>${Math.round(d.highest_elo || 0)}</td>
+      <td>${Math.round(d.current_elo || 0)}</td>
       <td>${d.wins || 0}-${d.losses || 0}</td>
-      <td>${d.matches_played || 0}</td>
     </tr>
   `).join("");
   
@@ -532,8 +534,8 @@ const teamStats = selectedSeason === "All Seasons"
           <th>Wrestler</th>
           <th>Team</th>
           <th>Highest Elo</th>
+          <th>Current Elo</th>
           <th>Record</th>
-          <th>Total Matches</th>
         </tr>
       </thead>
       <tbody>

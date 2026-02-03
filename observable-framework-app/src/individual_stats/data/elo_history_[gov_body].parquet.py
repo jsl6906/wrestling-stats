@@ -35,8 +35,41 @@ def main() -> None:
 	db_file = Path(output_dir) / f"trackwrestling_{gov_body}.db"
 	
 	if not db_file.exists():
-		log.error("Database file not found: %s", db_file)
-		sys.exit(1)
+		log.warning("Database file not found: %s. Returning empty dataset.", db_file)
+		# Output an empty parquet file
+		import pyarrow as pa
+		import pyarrow.parquet as pq
+		schema = pa.schema([
+			('name', pa.string()),
+			('event_id', pa.int64()),
+			('tournament_name', pa.string()),
+			('round_label', pa.string()),
+			('round_detail', pa.string()),
+			('team', pa.string()),
+			('role', pa.string()),
+			('weight_class', pa.string()),
+			('start_date', pa.timestamp('us')),
+			('opponent_name', pa.string()),
+			('opponent_team', pa.string()),
+			('opponent_pre_elo', pa.float64()),
+			('opponent_post_elo', pa.float64()),
+			('decision_type', pa.string()),
+			('decision_type_code', pa.string()),
+			('pre_elo', pa.float64()),
+			('post_elo', pa.float64()),
+			('adjustment', pa.float64()),
+			('expected_score', pa.float64()),
+			('margin', pa.int64()),
+			('fall_seconds', pa.int64()),
+			('last_updated', pa.timestamp('us')),
+			('elo_sequence', pa.int64()),
+			('start_date_iso', pa.string()),
+			('last_updated_iso', pa.string())
+		])
+		empty_table = pa.table({field.name: pa.array([], type=field.type) for field in schema})
+		pq.write_table(empty_table, sys.stdout.buffer)
+		sys.stdout.flush()
+		return
 	
 	log.info("Found database: %s", db_file)
 
@@ -70,7 +103,7 @@ def main() -> None:
 	parquet_tmp_name: str | None = None
 	con = None
 	try:
-		con = duckdb.connect(str(db_file))
+		con = duckdb.connect(str(db_file), read_only=True)
 		
 		parquet_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
 		parquet_tmp_name = parquet_tmp.name
@@ -86,8 +119,45 @@ def main() -> None:
 		log.info("Parquet file streamed to stdout successfully")
 		
 	except Exception as e:
-		log.error("Failed to export wrestler_history: %s", e)
-		sys.exit(1)
+		# Check if error is due to missing table
+		if "wrestler_history" in str(e) or "tournaments" in str(e) or "tournament_rounds" in str(e):
+			log.warning("Required tables not found: %s. Returning empty dataset.", e)
+			# Output empty parquet
+			import pyarrow as pa
+			import pyarrow.parquet as pq
+			schema = pa.schema([
+				('name', pa.string()),
+				('event_id', pa.int64()),
+				('tournament_name', pa.string()),
+				('round_label', pa.string()),
+				('round_detail', pa.string()),
+				('team', pa.string()),
+				('role', pa.string()),
+				('weight_class', pa.string()),
+				('start_date', pa.timestamp('us')),
+				('opponent_name', pa.string()),
+				('opponent_team', pa.string()),
+				('opponent_pre_elo', pa.float64()),
+				('opponent_post_elo', pa.float64()),
+				('decision_type', pa.string()),
+				('decision_type_code', pa.string()),
+				('pre_elo', pa.float64()),
+				('post_elo', pa.float64()),
+				('adjustment', pa.float64()),
+				('expected_score', pa.float64()),
+				('margin', pa.int64()),
+				('fall_seconds', pa.int64()),
+				('last_updated', pa.timestamp('us')),
+				('elo_sequence', pa.int64()),
+				('start_date_iso', pa.string()),
+				('last_updated_iso', pa.string())
+			])
+			empty_table = pa.table({field.name: pa.array([], type=field.type) for field in schema})
+			pq.write_table(empty_table, sys.stdout.buffer)
+			sys.stdout.flush()
+		else:
+			log.error("Failed to export wrestler_history: %s", e)
+			sys.exit(1)
 	finally:
 		try:
 			if parquet_tmp_name:

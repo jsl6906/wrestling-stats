@@ -173,10 +173,10 @@ TEST_CASES = [
         input_text="Angelo Norwood (Kellam HS) over John (Peyton) Cherkaur (Gloucester HS) Fall 2:28",
         expected={
             "winner_name": "Angelo Norwood",
-            "winner_team": "Kellam HS",
+            "winner_team": "Kellam",
             "decision_type": "fall",
             "loser_name": "John (Peyton) Cherkaur",
-            "loser_team": "Gloucester HS",
+            "loser_team": "Gloucester",
             "decision_type_code": "Fall",
             "fall_time": "2:28",
         }
@@ -312,6 +312,149 @@ TEST_CASES = [
             "loser_name": "Keyanta Robinson",
             "loser_team": "Amherst",
             "decision_type_code": "For.",
+        }
+    ),
+    
+    TestCase(
+        name="Team name normalization: E9 -> E9; Scanlan Wrestling Academy -> Scanlan",
+        input_text="Round 1 - John Doe (E9) 5-0 won by decision over Jane Smith (Scanlan Wrestling Academy) 3-2 (Dec 7-2)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "John Doe",
+            "winner_team": "E9",
+            "decision_type": "decision",
+            "loser_name": "Jane Smith",
+            "loser_team": "Scanlan",
+            "decision_type_code": "Dec",
+            "winner_points": 7,
+            "loser_points": 2,
+        }
+    ),
+    
+    TestCase(
+        name="Remove 'HS' suffix from team names",
+        input_text="Round 1 - John Smith (Kellam HS) 5-0 won by decision over Jane Doe (Gloucester HS) 3-2 (Dec 7-5)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "John Smith",
+            "winner_team": "Kellam",
+            "decision_type": "decision",
+            "loser_name": "Jane Doe",
+            "loser_team": "Gloucester",
+            "decision_type_code": "Dec",
+            "winner_points": 7,
+            "loser_points": 5,
+        }
+    ),
+    
+    TestCase(
+        name="Remove 'Sr HS' suffix from team names",
+        input_text="Semifinal - Alice Johnson (Akron Sr HS) 10-2 won by major decision over Bob Wilson (Canton Sr HS) 8-5 (MD 12-3)",
+        expected={
+            "round_detail": "Semifinal",
+            "winner_name": "Alice Johnson",
+            "winner_team": "Akron",
+            "decision_type": "major decision",
+            "loser_name": "Bob Wilson",
+            "loser_team": "Canton",
+            "decision_type_code": "MD",
+            "winner_points": 12,
+            "loser_points": 3,
+        }
+    ),
+    
+    TestCase(
+        name="Remove dash-number suffix from team names (e.g., 'Averill Park-2' -> 'Averill Park')",
+        input_text="Round 1 - Mike Thompson (Averill Park-2) 8-1 won by decision over Sarah Lee (Bethlehem-3) 5-4 (Dec 9-4)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "Mike Thompson",
+            "winner_team": "Averill Park",
+            "decision_type": "decision",
+            "loser_name": "Sarah Lee",
+            "loser_team": "Bethlehem",
+            "decision_type_code": "Dec",
+            "winner_points": 9,
+            "loser_points": 4,
+        }
+    ),
+    
+    TestCase(
+        name="Transform APW/PUL to Altmar-Parish-Williamstown (Pulaski)",
+        input_text="Round 1 - John Doe (APW/PUL) 5-0 won by decision over Jane Smith (Team B) 3-2 (Dec 7-3)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "John Doe",
+            "winner_team": "Altmar-Parish-Williamstown (Pulaski)",
+            "decision_type": "decision",
+            "loser_name": "Jane Smith",
+            "loser_team": "Team B",
+            "decision_type_code": "Dec",
+            "winner_points": 7,
+            "loser_points": 3,
+        }
+    ),
+    
+    TestCase(
+        name="Transform Altmar-Parish-Williamstown to Altmar-Parish-Williamstown (Pulaski)",
+        input_text="Semifinal - Alice Brown (Altmar-Parish-Williamstown) 9-2 won by fall over Bob Green (Team C) 5-3 (Fall 3:45)",
+        expected={
+            "round_detail": "Semifinal",
+            "winner_name": "Alice Brown",
+            "winner_team": "Altmar-Parish-Williamstown (Pulaski)",
+            "decision_type": "fall",
+            "loser_name": "Bob Green",
+            "loser_team": "Team C",
+            "decision_type_code": "Fall",
+            "fall_time": "3:45",
+        }
+    ),
+    
+    TestCase(
+        name="Remove 'Jr HS' suffix from team names",
+        input_text="Round 1 - Tom Wilson (Lincoln Jr HS) 7-2 won by decision over Sam Davis (Jefferson Jr HS) 4-3 (Dec 8-4)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "Tom Wilson",
+            "winner_team": "Lincoln",
+            "decision_type": "decision",
+            "loser_name": "Sam Davis",
+            "loser_team": "Jefferson",
+            "decision_type_code": "Dec",
+            "winner_points": 8,
+            "loser_points": 4,
+        }
+    ),
+    
+    TestCase(
+        name="Remove 'Jr' suffix from team names",
+        input_text="Quarterfinal - Emily Brown (Madison Jr) 9-1 won by major decision over Chris Lee (Washington Jr) 6-4 (MD 11-2)",
+        expected={
+            "round_detail": "Quarterfinal",
+            "winner_name": "Emily Brown",
+            "winner_team": "Madison",
+            "decision_type": "major decision",
+            "loser_name": "Chris Lee",
+            "loser_team": "Washington",
+            "decision_type_code": "MD",
+            "winner_points": 11,
+            "loser_points": 2,
+        }
+    ),
+    
+    TestCase(
+        name="Remove dash-letter suffix from team names (e.g., 'Team-A' -> 'Team')",
+        input_text="Round 1 - Alex Martinez (Central-A) 6-2 won by decision over Jordan Lee (Westside- C) 4-3 (Dec 8-5)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "Alex Martinez",
+            "winner_team": "Central",
+            "decision_type": "decision",
+            "loser_name": "Jordan Lee",
+            "loser_team": "Westside",
+            "decision_type_code": "Dec",
+            "winner_points": 8,
+            "loser_points": 5,
         }
     ),
 ]

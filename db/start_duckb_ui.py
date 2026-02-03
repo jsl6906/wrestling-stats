@@ -1,11 +1,11 @@
 """
 Simple DuckDB UI Launcher
 Connects to the local database and launches the DuckDB web UI
+Requires DuckDB to be installed, and internet access for the web UI.
 """
 
 import duckdb
 from pathlib import Path
-
 
 def main():
     # Find all .db files from output/ directory

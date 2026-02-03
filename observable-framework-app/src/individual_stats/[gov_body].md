@@ -260,7 +260,7 @@ const activeWrestler = (() => {
   };
   
   if (!activeWrestler) {
-    return wrap(`<div class="empty-state"><h3>Select a wrestler to view statistics</h3><p>Choose a wrestler from the dropdown above to see their detailed statistics, match history, and performance charts.</p></div>`);
+    return wrap(`<div class="empty-state red"><h3>Select a wrestler to view statistics</h3><p>Choose a wrestler from the dropdown above to see their detailed statistics, match history, and performance charts.</p></div>`);
   }
   
   const w = Array.isArray(wrestlers) ? wrestlers.find(d => d.name === activeWrestler) : null;
@@ -322,7 +322,7 @@ const activeWrestler = (() => {
   };
   
   if (!activeWrestler) {
-    return wrap(`<div class="empty-state"><h3>Select a wrestler to view opponent statistics</h3><p>Choose a wrestler from the dropdown above to see their head-to-head records against other wrestlers.</p></div>`);
+    return wrap(`<div class="empty-state red"><h3>Select a wrestler to view opponent statistics</h3><p>Choose a wrestler from the dropdown above to see their head-to-head records against other wrestlers.</p></div>`);
   }
   
   const rowsFor = elo_history.filter(d => d.name === activeWrestler);
@@ -555,7 +555,7 @@ const activeWrestler = (() => {
   };
   
   if (!activeWrestler) {
-    return wrap(`<div class="empty-state"><h3>Select a wrestler to view upsets</h3><p>Choose a wrestler from the dropdown above to see their biggest upset wins and losses.</p></div>`);
+    return wrap(`<div class="empty-state red"><h3>Select a wrestler to view upsets</h3><p>Choose a wrestler from the dropdown above to see their biggest upset wins and losses.</p></div>`);
   }
   
   const rowsFor = elo_history.filter(d => d.name === activeWrestler);
@@ -735,7 +735,14 @@ const dateTicksForSeries = (() => {
 
 ```js
 // Line chart of Elo over time for the selected wrestler
-!activeWrestler ? "Select a wrestler to view their Elo rating history." : Plot.plot({
+!activeWrestler ? (() => {
+  const wrap = (html) => {
+    const div = document.createElement("div");
+    div.innerHTML = html.trim();
+    return div.firstChild || div;
+  };
+  return wrap(`<div class="empty-state red"><h3>Choose a wrestler to view their Elo rating history</h3><p>Select a wrestler from the dropdown above to see their Elo rating progression over time.</p></div>`);
+})() : Plot.plot({
   width: 900,
   height: 420,
   marginLeft: 48,
@@ -870,7 +877,14 @@ const selectedEnd = seriesByDate.length ? seriesByDate[seriesByDate.length - 1] 
 
 ```js
 // Render overlay chart (guard against empty data) with date-based x-axis
-!activeWrestler ? "Select a wrestler to view comparison with other wrestlers." : (opponentSeries.length || nonOpponentSeries.length || seriesByDate.length)
+!activeWrestler ? (() => {
+  const wrap = (html) => {
+    const div = document.createElement("div");
+    div.innerHTML = html.trim();
+    return div.firstChild || div;
+  };
+  return wrap(`<div class="empty-state red"><h3>Choose a wrestler to view Elo comparison</h3><p>Select a wrestler from the dropdown above to compare their Elo progression with other wrestlers.</p></div>`);
+})() : (opponentSeries.length || nonOpponentSeries.length || seriesByDate.length)
   ? (() => {
       // Create ticks showing only first date of each month
       const monthTicks = (() => {

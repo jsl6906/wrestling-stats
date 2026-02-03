@@ -303,17 +303,15 @@ def _fix_known_issues(s: str) -> str:
 # Add name and team corrections here. Each entry is (regex_pattern, replacement), case-insensitive.
 # Example: fix nicknames in parentheses or common misspellings.
 NAME_CONVERSIONS_RAW: List[Tuple[str, str]] = [
+    # Specific case handling for inconsistent wrestler name entries
     (r"\bKeyvon\s*\(\s*kj\s*\)\s*Riley\b", "Keyvon Riley"),
-    # Normalize Blaise McNeil variants (McNeil/McNeill/Mcneil) to 'Blaise McNeil'
     (r"\bBlaise\s+McNeil{1,2}\b", "Blaise McNeil"),
-    # Normalize Mateo/Matteo Corsini variants to 'Matteo Corsini'
     (r"\bMat{1,2}eo\s+Corsini\b", "Matteo Corsini"),
-    # Normalize Carter Van Dyk/Van-dyk variants to 'Carter Van-Dyk'
     (r"\bCarter\s+Van[\s-]?[Dd]yk\b", "Carter Van-Dyk"),
-    # Normalize Chaley Pai-Bedell/Pia-Bedell variants to 'Chaley Pai-Bedell'
     (r"\bChaley\s+P[ia]{2}-Bedell\b", "Chaley Pai-Bedell"),
+
     # Remove "(correct)" annotation from names
-    (r"\bBlake\s+Rosenbaum\s+\(correct\)\b", "Blake Rosenbaum"),
+    (r"\s*\(correct\)", ""),
     # Remove forfeit/bye suffixes from names (e.g., "John Doe-Forfeit" -> "John Doe")
     (r"-\s*(?:Forfeit|Bye|DFF|DDQ|Unknown|Forfiet)\b", ""),
     # Remove any digits present in names (e.g., 'John 2 Doe' -> 'John Doe')
@@ -321,35 +319,35 @@ NAME_CONVERSIONS_RAW: List[Tuple[str, str]] = [
 ]
 
 TEAM_CONVERSIONS_RAW: List[Tuple[str, str]] = [
-    (r"\bAlexandria\s+Junior\s+Titans\b", "Alexandria"),
-    (r"\bAnnandale\s+Mat\s+Rats\b", "Annandale"),
-    (r"\bBraddock\s+Wrestling\s+Club\b", "Braddock"),
-    (r"\bE9\b", "E9 Wrestling"),
-    (r"\bE9\s*Wrestling\b|\bE9Wrestling\b", "E9 Wrestling"),
-    (r"\bFauquier\s+Wrestling\b", "Fauquier"),
-    (r"\bFort\s*Belvoir\b|\bFortBelvoir\b", "Fort Belvoir"),
-    (r"\bFranconia\s+Wrestling\s+Club\b", "Franconia"),
-    (r"\bGunston\s+Wrestling\s+Club\b", "Gunston"),
+    # Specific case handling for inconsistent team entries
     (r"\bHerndon\s*Hawks\b|\bHerndonHawks\b", "Herndon Hawks"),
-    (r"\bKing\s*George\b|\bKingGeorge\b", "King George"),
-    (r"\bKing\s+George\s+Wrestling\s+Club\b", "King George"),
-    (r"\bAlexandria\b", "Alexandria Junior Titans"),  # note: later rule overrides earlier mapping
-    (r"\bMcLean\s+Lions?\s+Wrestling\b", "McLean"),
-    (r"\bMount\s+Vernon\s+Youth\s+Wrestling\b", "Mt Vernon"),
-    (r"\bMount\s*Vernon\b|\bMountVernon\b", "Mt Vernon"),
-    (r"\bPit\s*Bull\b|\bPitBull\b", "Pit Bull"),
-    (r"\bPrince\s+William\s+County\s+Wrestling\s+Club\b", "Prince William"),
-    (r"\bPrince\s+William\s+Wrestling\s+Club\b", "Prince William"),
-    (r"\bPrinceWilliam\b", "Prince William"),
     (r"\bRangers\b", "Ranger Wrestling Club"),
-    (r"\bScanlan\s+Wrestling\s+Academy\b", "Scanlan"),
-    (r"\bScanlon\s+Wrestling\b", "Scanlan"),
-    (r"\bSmyrna\s+Wrestling\b", "Smyrna"),
-    (r"\bSouth\s+County\s+Athletic\s+Association\b", "South County"),
-    (r"\bSouthCounty\b", "South County"),
-    (r"\bVienna\s+Youth\s+Inc\b", "Vienna"),
-    (r"\bVikings?\s+Wrestling\s+Club\b", "Vikings"),
+    (r"\bPit\s*Bull\b|\bPitBull\b", "Pit Bull"),
     (r"\bWild\s*Buffalos\b|\bWildBuffalos\b", "Wild Buffalos"),
+    (r"\bAnnandale\s+Mat\s+Rats\b", "Annandale"),
+    (r"\bFort\s*Belvoir\b|\bFortBelvoir\b", "Fort Belvoir"),
+    (r"\bMount\s+Vernon(?:\s+Youth\s+Wrestling)?\b|\bMount\s*Vernon\b|\bMountVernon\b", "Mt Vernon"),
+    (r"\bPrince\s+William(?:\s+(?:County\s+)?Wrestling\s+Club)?\b|\bPrinceWilliam\b", "Prince William County"),
+    (r"\bSouth\s+County(?:\s+Athletic\s+Association)?\b|\bSouthCounty\b", "South County"),
+    (r"\bVienna\s+Youth\s+Inc\b", "Vienna"),
+    (r".*(APW/PUL|Altmar-Parish-Williamstown).*", "Altmar-Parish-Williamstown (Pulaski)"),
+    
+    # General cleanup rules (apply after specific transformations)
+    (r"\s+Wrestling\s+Academy\b", ""),
+    (r"\s+Wrestling\s+Club\b", ""),
+    (r"\s+Youth\s+Wrestling\b", ""),
+    (r"\s+Wrestling\b", ""),
+    # Remove HS/Sr HS/Jr HS/Jr suffixes (apply after other specific conversions)
+    (r"\s+High\s+School\b", ""),
+    (r"\s+School\b", ""),
+    (r"\s+Sr\s+HS\b", ""),
+    (r"\s+Jr\s+HS\b", ""),
+    (r"\s+HS\b", ""),
+    (r"\s+Jr\b", ""),
+    # Remove dash followed by numbers (e.g., "Team-2" -> "Team")
+    (r"-\d+$", ""),
+    # Remove dash followed by a single letter (e.g., "Team-A" -> "Team", "Team- C" -> "Team")
+    (r"-\s*[A-Za-z]$", ""),
 ]
 
 NAME_CONVERSIONS = [(re.compile(pat, re.IGNORECASE), repl) for pat, repl in NAME_CONVERSIONS_RAW]

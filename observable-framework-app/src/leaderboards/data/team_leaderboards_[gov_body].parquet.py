@@ -35,8 +35,24 @@ def main() -> None:
 	db_file = Path(output_dir) / f"trackwrestling_{gov_body}.db"
 	
 	if not db_file.exists():
-		log.error("Database file not found: %s", db_file)
-		sys.exit(1)
+		log.warning("Database file not found: %s. Returning empty dataset.", db_file)
+		# Output an empty parquet file
+		import pyarrow as pa
+		import pyarrow.parquet as pq
+		schema = pa.schema([
+			('team', pa.string()),
+			('season', pa.string()),
+			('matches_played', pa.int64()),
+			('wins', pa.int64()),
+			('losses', pa.int64()),
+			('wins_fall', pa.int64()),
+			('win_pct', pa.float64()),
+			('fall_pct', pa.float64())
+		])
+		empty_table = pa.table({field.name: pa.array([], type=field.type) for field in schema})
+		pq.write_table(empty_table, sys.stdout.buffer)
+		sys.stdout.flush()
+		return
 	
 	log.info("Found database: %s", db_file)
 
@@ -97,7 +113,7 @@ def main() -> None:
 	parquet_tmp_name: str | None = None
 	con = None
 	try:
-		con = duckdb.connect(str(db_file))
+		con = duckdb.connect(str(db_file), read_only=True)
 		
 		parquet_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
 		parquet_tmp_name = parquet_tmp.name
@@ -113,8 +129,28 @@ def main() -> None:
 		log.info("Parquet file streamed to stdout successfully")
 		
 	except Exception as e:
-		log.error("Failed to export team leaderboards: %s", e)
-		sys.exit(1)
+		# Check if error is due to missing table
+		if "wrestler_history" in str(e):
+			log.warning("Required tables not found: %s. Returning empty dataset.", e)
+			# Output empty parquet
+			import pyarrow as pa
+			import pyarrow.parquet as pq
+			schema = pa.schema([
+				('team', pa.string()),
+				('season', pa.string()),
+				('matches_played', pa.int64()),
+				('wins', pa.int64()),
+				('losses', pa.int64()),
+				('wins_fall', pa.int64()),
+				('win_pct', pa.float64()),
+				('fall_pct', pa.float64())
+			])
+			empty_table = pa.table({field.name: pa.array([], type=field.type) for field in schema})
+			pq.write_table(empty_table, sys.stdout.buffer)
+			sys.stdout.flush()
+		else:
+			log.error("Failed to export team leaderboards: %s", e)
+			sys.exit(1)
 	finally:
 		try:
 			if parquet_tmp_name:
