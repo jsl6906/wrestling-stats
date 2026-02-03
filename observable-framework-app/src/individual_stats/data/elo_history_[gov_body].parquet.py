@@ -55,6 +55,8 @@ def main() -> None:
 			('opponent_post_elo', pa.float64()),
 			('decision_type', pa.string()),
 			('decision_type_code', pa.string()),
+			('bye', pa.bool_()),
+			('bye', pa.bool_()),
 			('pre_elo', pa.float64()),
 			('post_elo', pa.float64()),
 			('adjustment', pa.float64()),
@@ -85,6 +87,7 @@ def main() -> None:
 		wh.weight_class, wh.start_date,
 		wh.opponent_name, wh.opponent_team, wh.opponent_pre_elo, wh.opponent_post_elo,
 		wh.decision_type, wh.decision_type_code,
+		wh.bye,
 		wh.pre_elo, wh.post_elo, wh.adjustment, wh.expected_score,
 		wh.margin, wh.fall_seconds,
 		wh.last_updated,
@@ -93,7 +96,7 @@ def main() -> None:
 		CAST(wh.start_date AS VARCHAR) AS start_date_iso,
 		CAST(wh.last_updated AS VARCHAR) AS last_updated_iso
 	  FROM wrestler_history wh
-	  JOIN tournaments t ON t.event_id = wh.event_id
+	  LEFT JOIN tournaments t ON t.event_id = wh.event_id
 	  LEFT JOIN tournament_rounds tr ON tr.event_id = wh.event_id AND tr.round_id = wh.round_id
 	  ORDER BY wh.start_date NULLS LAST, wh.event_id, wh.round_order NULLS LAST, wh.elo_sequence NULLS LAST, wh.match_rowid, wh.role
 	) TO ? (FORMAT 'parquet')

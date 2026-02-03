@@ -310,6 +310,252 @@ const activeWrestler = (() => {
 })()
 ```
 
+## Statistics by Team
+
+```js
+// Team-based statistics table
+(() => {
+  const wrap = (html) => {
+    const div = document.createElement("div");
+    div.innerHTML = html.trim();
+    return div.firstChild || div;
+  };
+  
+  if (!activeWrestler) {
+    return wrap(`<div class="empty-state red"><h3>Select a wrestler to view team statistics</h3><p>Choose a wrestler from the dropdown above to see their statistics broken down by team.</p></div>`);
+  }
+  
+  // Debug: check data availability
+  const allRowsFor = elo_history.filter(d => d.name === activeWrestler);
+  const rowsFor = allRowsFor.filter(d => d.bye !== true);
+  if (!rowsFor.length) {
+    return wrap(`<div class="empty-state"><h3>No team data available</h3><p>No match history found for ${formatWrestlerName(activeWrestler)}.</p></div>`);
+  }
+  
+  // Group matches by team
+  const teamStats = new Map();
+  
+  for (const match of rowsFor) {
+    const team = match.team || "Unknown";
+    
+    if (!teamStats.has(team)) {
+      teamStats.set(team, {
+        team: team,
+        wins: 0,
+        losses: 0,
+        winsFall: 0,
+        lossesFall: 0,
+        totalMatches: 0,
+        oppEloSum: 0,
+        oppEloCount: 0
+      });
+    }
+    
+    const stats = teamStats.get(team);
+    
+    const isFall = String(match.decision_type || '').toLowerCase().includes('fall') || ['FALL', 'PIN'].includes(String(match.decision_type_code || '').toUpperCase());
+    
+    if (match.role === 'W' || match.role === 'winner') {
+      stats.totalMatches++;
+      stats.wins++;
+      if (isFall) stats.winsFall++;
+    } else if (match.role === 'L' || match.role === 'loser') {
+      stats.totalMatches++;
+      stats.losses++;
+      if (isFall) stats.lossesFall++;
+    }
+    
+    // Track opponent ELO
+    const oppPreElo = Number(match.opponent_pre_elo);
+    if (Number.isFinite(oppPreElo)) {
+      stats.oppEloSum += oppPreElo;
+      stats.oppEloCount++;
+    }
+  }
+  
+  // Calculate averages and prepare data
+  const teams = Array.from(teamStats.values())
+    .map(stats => ({
+      ...stats,
+      winPct: stats.totalMatches > 0 ? (stats.wins / stats.totalMatches) * 100 : 0,
+      avgOppElo: stats.oppEloCount > 0 ? stats.oppEloSum / stats.oppEloCount : 0
+    }))
+    .sort((a, b) => b.totalMatches - a.totalMatches);
+  
+  if (!teams.length) {
+    return wrap(`<div class="empty-state"><h3>No team data available</h3><p>No team information found for ${formatWrestlerName(activeWrestler)}.</p></div>`);
+  }
+  
+  const fmt1 = (n) => Number.isFinite(+n) ? (+n).toFixed(1) : "-";
+  const fmt = (n) => Number.isFinite(+n) ? Math.round(+n) : "-";
+  
+  // Calculate totals for comparison with overall stats
+  const totalWins = teams.reduce((sum, t) => sum + t.wins, 0);
+  const totalLosses = teams.reduce((sum, t) => sum + t.losses, 0);
+  
+  const tableRows = teams.map(stats => `
+    <tr>
+      <td>${stats.team}</td>
+      <td>${stats.wins}</td>
+      <td>${stats.losses}</td>
+      <td>${stats.winsFall}</td>
+      <td>${stats.lossesFall}</td>
+      <td>${fmt1(stats.winPct)}%</td>
+      <td>${fmt(stats.avgOppElo)}</td>
+    </tr>
+  `).join("");
+  
+  return wrap(`
+    <div>
+    <p style="font-size: 0.85em; color: #666; margin-bottom: 10px;">Debug: ${allRowsFor.length} total matches, ${rowsFor.length} non-bye matches, ${totalWins} wins, ${totalLosses} losses</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Team</th>
+          <th>Wins</th>
+          <th>Losses</th>
+          <th>Wins (Fall)</th>
+          <th>Losses (Fall)</th>
+          <th>Win %</th>
+          <th>Avg Opp Elo</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tableRows}
+      </tbody>
+    </table>
+    </div>
+  `);
+})()
+```
+
+## Statistics by Season
+
+```js
+// Season-based statistics table
+(() => {
+  const wrap = (html) => {
+    const div = document.createElement("div");
+    div.innerHTML = html.trim();
+    return div.firstChild || div;
+  };
+  
+  if (!activeWrestler) {
+    return wrap(`<div class="empty-state red"><h3>Select a wrestler to view season statistics</h3><p>Choose a wrestler from the dropdown above to see their statistics broken down by season.</p></div>`);
+  }
+  
+  // Debug: check data availability
+  const allRowsFor = elo_history.filter(d => d.name === activeWrestler);
+  const rowsFor = allRowsFor.filter(d => d.bye !== true);
+  if (!rowsFor.length) {
+    return wrap(`<div class="empty-state"><h3>No season data available</h3><p>No match history found for ${formatWrestlerName(activeWrestler)}.</p></div>`);
+  }
+  
+  // Group matches by season (Sept 1 to Aug 31)
+  const seasonStats = new Map();
+  
+  for (const match of rowsFor) {
+    const matchDate = parseDate(match.start_date_iso ?? match.start_date);
+    if (!matchDate) continue;
+    
+    // Calculate season: Sept 1 to Aug 31
+    const year = matchDate.getFullYear();
+    const month = matchDate.getMonth() + 1; // JavaScript months are 0-indexed
+    const season = month >= 9 
+      ? `${year}-${year + 1}` 
+      : `${year - 1}-${year}`;
+    
+    if (!seasonStats.has(season)) {
+      seasonStats.set(season, {
+        season: season,
+        wins: 0,
+        losses: 0,
+        winsFall: 0,
+        lossesFall: 0,
+        totalMatches: 0,
+        oppEloSum: 0,
+        oppEloCount: 0
+      });
+    }
+    
+    const stats = seasonStats.get(season);
+    
+    const isFall = String(match.decision_type || '').toLowerCase().includes('fall') || ['FALL', 'PIN'].includes(String(match.decision_type_code || '').toUpperCase());
+    
+    if (match.role === 'W' || match.role === 'winner') {
+      stats.totalMatches++;
+      stats.wins++;
+      if (isFall) stats.winsFall++;
+    } else if (match.role === 'L' || match.role === 'loser') {
+      stats.totalMatches++;
+      stats.losses++;
+      if (isFall) stats.lossesFall++;
+    }
+    
+    // Track opponent ELO
+    const oppPreElo = Number(match.opponent_pre_elo);
+    if (Number.isFinite(oppPreElo)) {
+      stats.oppEloSum += oppPreElo;
+      stats.oppEloCount++;
+    }
+  }
+  
+  // Calculate averages and prepare data
+  const seasons = Array.from(seasonStats.values())
+    .map(stats => ({
+      ...stats,
+      winPct: stats.totalMatches > 0 ? (stats.wins / stats.totalMatches) * 100 : 0,
+      avgOppElo: stats.oppEloCount > 0 ? stats.oppEloSum / stats.oppEloCount : 0
+    }))
+    .sort((a, b) => b.season.localeCompare(a.season)); // Most recent season first
+  
+  if (!seasons.length) {
+    return wrap(`<div class="empty-state"><h3>No season data available</h3><p>No season information found for ${formatWrestlerName(activeWrestler)}.</p></div>`);
+  }
+  
+  const fmt1 = (n) => Number.isFinite(+n) ? (+n).toFixed(1) : "-";
+  const fmt = (n) => Number.isFinite(+n) ? Math.round(+n) : "-";
+  
+  // Calculate totals for comparison with overall stats
+  const totalWins = seasons.reduce((sum, s) => sum + s.wins, 0);
+  const totalLosses = seasons.reduce((sum, s) => sum + s.losses, 0);
+  
+  const tableRows = seasons.map(stats => `
+    <tr>
+      <td>${stats.season}</td>
+      <td>${stats.wins}</td>
+      <td>${stats.losses}</td>
+      <td>${stats.winsFall}</td>
+      <td>${stats.lossesFall}</td>
+      <td>${fmt1(stats.winPct)}%</td>
+      <td>${fmt(stats.avgOppElo)}</td>
+    </tr>
+  `).join("");
+  
+  return wrap(`
+    <div>
+    <p style="font-size: 0.85em; color: #666; margin-bottom: 10px;">Debug: ${allRowsFor.length} total matches, ${rowsFor.length} non-bye matches, ${totalWins} wins, ${totalLosses} losses</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Season</th>
+          <th>Wins</th>
+          <th>Losses</th>
+          <th>Wins (Fall)</th>
+          <th>Losses (Fall)</th>
+          <th>Win %</th>
+          <th>Avg Opp Elo</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tableRows}
+      </tbody>
+    </table>
+    </div>
+  `);
+})()
+```
+
 ## Opponent Statistics
 
 ```js
@@ -354,14 +600,15 @@ const activeWrestler = (() => {
     }
     
     const stats = opponentStats.get(opp);
-    stats.totalMatches++;
     
     const isFall = String(match.decision_type || '').toLowerCase().includes('fall') || ['FALL', 'PIN'].includes(String(match.decision_type_code || '').toUpperCase());
     
     if (match.role === 'W' || match.role === 'winner') {
+      stats.totalMatches++;
       stats.wins++;
       if (isFall) stats.winsFall++;
     } else if (match.role === 'L' || match.role === 'loser') {
+      stats.totalMatches++;
       stats.losses++;
       if (isFall) stats.lossesFall++;
     }
