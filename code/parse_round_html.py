@@ -138,8 +138,8 @@ def insert_match(conn: duckdb.DuckDBPyConnection, row: Dict[str, Any]) -> None:
     )
 
 
-def delete_all_matches(conn: duckdb.DuckDBPyConnection) -> tuple[int, int]:
-    """Delete all matches and wrestler_history. Returns (matches_deleted, history_deleted)."""
+def delete_all_matches(conn: duckdb.DuckDBPyConnection) -> tuple[int, int, int]:
+    """Delete all matches, wrestler_history, and wrestlers. Returns (matches_deleted, history_deleted, wrestlers_deleted)."""
     # Count before deleting
     history_result = conn.execute("""--sql
         SELECT COUNT(*) FROM wrestler_history
@@ -151,6 +151,11 @@ def delete_all_matches(conn: duckdb.DuckDBPyConnection) -> tuple[int, int]:
     """).fetchone()
     matches_count = matches_result[0] if matches_result else 0
     
+    wrestlers_result = conn.execute("""--sql
+        SELECT COUNT(*) FROM wrestler
+    """).fetchone()
+    wrestlers_count = wrestlers_result[0] if wrestlers_result else 0
+    
     # Delete all wrestler_history
     conn.execute("""--sql
         DELETE FROM wrestler_history
@@ -161,7 +166,12 @@ def delete_all_matches(conn: duckdb.DuckDBPyConnection) -> tuple[int, int]:
         DELETE FROM matches
     """)
     
-    return matches_count, history_count
+    # Delete all wrestlers
+    conn.execute("""--sql
+        DELETE FROM wrestler
+    """)
+    
+    return matches_count, history_count, wrestlers_count
 
 
 def delete_matches_for_round(conn: duckdb.DuckDBPyConnection, event_id: str, round_id: str) -> int:
@@ -309,9 +319,32 @@ NAME_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     (r"\bMat{1,2}eo\s+Corsini\b", "Matteo Corsini"),
     (r"\bCarter\s+Van[\s-]?[Dd]yk\b", "Carter Van-Dyk"),
     (r"\bChaley\s+P[ia]{2}-Bedell\b", "Chaley Pai-Bedell"),
+    
+    # Replace sequences of pound signs (redacted names) with Unknown Wrestler
+    (r"^[#\s]+$", "Unknown Wrestler"),
+    # Normalize acronyms step 1: remove periods and > between capital letters (e.g., "C.J." -> "C J")
+    (r"\b([A-Z])[.>](?=[A-Z]\b)", r"\1"),
+    # Normalize acronyms step 2: remove trailing periods and > after sequences of capital letters
+    (r"\b([A-Z]{2,})[.>]+", r"\1"),
+    # Normalize acronyms step 3: remove spaces between single capital letters that form acronyms
+    # Match single capital + space + single capital at word boundary (prevents "Jordan Lee" from matching)
+    (r"\b([A-Z])\s+(?=[A-Z]\b)", r"\1"),
+    # Remove ' - *' suffix from names (e.g., "Adam Preston - *" -> "Adam Preston")
+    # Must come before general space-dash-space replacement
+    (r"\s+-\s+\*$", ""),
+    # Replace space-dash-space with dash (e.g., "Villa - Soto" -> "Villa-Soto")
+    (r"\s+-\s+", "-"),
 
     # Remove "(correct)" annotation from names
     (r"\s*\(correct\)", ""),
+    # Remove leading opening parentheses (typos in HTML)
+    (r"^\(+", ""),
+    # Remove parenthetical forfeit/bye markers from names (e.g., "Devin Rader (FORFEIT)" -> "Devin Rader")
+    (r"\s*\((?:FORFEIT|BYE|DFF|DDQ|UNKNOWN|NS)\)", ""),
+    # Remove parenthetical seed numbers from names (e.g., "Maima Dandai (1)" -> "Maima Dandai")
+    (r"\s*\(\d+\)", ""),
+    # Remove seed number prefixes with slashes from names (e.g., "11/Dustin Tucker" -> "Dustin Tucker")
+    (r"^\d+/", ""),
     # Remove forfeit/bye suffixes from names (e.g., "John Doe-Forfeit" -> "John Doe")
     (r"-\s*(?:Forfeit|Bye|DFF|DDQ|Unknown|Forfiet)\b", ""),
     # Remove any digits present in names (e.g., 'John 2 Doe' -> 'John Doe')
@@ -458,9 +491,11 @@ def _parse_wrestler_team_first(text: str) -> tuple[Optional[str], Optional[str],
     Handles nicknames in parentheses like "John (Peyton) Cherkaur (Gloucester HS)".
     
     Strategy:
-    1. If a parenthesis is followed by a record (e.g., "17-21"), it's the team
-    2. Otherwise, prefer parentheses that look like team names (contain "HS", multiple words, etc.)
-    3. Skip parentheses that look like nicknames (single word, short, mid-name)
+    1. Stop searching once we find a valid team (don't include decision code parentheses)
+    2. If a parenthesis is followed by a record (e.g., "17-21"), it's the team
+    3. Otherwise, prefer parentheses that look like team names (contain "HS", multiple words, etc.)
+    4. Skip parentheses that look like nicknames (single word, short, mid-name)
+    5. Stop after finding first high-scoring candidate (>= 20 score)
     
     Returns:
         Tuple of (wrestler_name, team_name, end_position)
@@ -470,7 +505,9 @@ def _parse_wrestler_team_first(text: str) -> tuple[Optional[str], Optional[str],
     # Collect all parenthetical groups with their positions
     candidates = []
     pos = 0
-    while pos < len(text):
+    found_good_candidate = False
+    
+    while pos < len(text) and not found_good_candidate:
         if text[pos] == '(':
             # Try to extract this parenthetical group
             content, end_pos = _extract_team_with_parens(text, pos)
@@ -495,17 +532,35 @@ def _parse_wrestler_team_first(text: str) -> tuple[Optional[str], Optional[str],
                 if len(content) > 10:  # Longer content
                     score += 20
                 
-                # Indicators it's a nickname
-                if ' ' not in content.strip():  # Single word
-                    score -= 30
-                if len(content) <= 8:  # Short content
-                    score -= 20
-                if pos > 0 and pos < len(text) - end_pos:  # Mid-text (not at start or end)
-                    name_before = text[:pos].strip()
-                    if name_before and not name_before.endswith(')'):  # Name continues after
-                        score -= 25
+                # Check if this looks like it's immediately after a name (team position)
+                name_before = text[:pos].strip()
+                if name_before and not name_before.endswith(')'):
+                    # This parenthesis comes right after text, likely the team
+                    score += 40
+                
+                # Indicators it's a nickname (in the middle of a name)
+                if ' ' not in content.strip() and len(content) <= 8:  # Single short word
+                    # But only penalize if it's in the middle of text with more content after
+                    remaining_significant = text[end_pos:].strip()
+                    # Check if there's significant content after (more than just spacing and decision codes)
+                    if remaining_significant and len(remaining_significant) > 10:
+                        # Check if what's after looks like it could have another team name
+                        if '(' in remaining_significant:
+                            score -= 30  # Likely a nickname, not the team
+                
+                # Check for decision code patterns after this parenthesis
+                remaining_after_stripped = text[end_pos:].lstrip()
+                # If followed by decision code patterns like "TB-2", "Fall", "Dec", this is probably the team
+                if _re.match(r'^[A-Z]{2,}-?\d*\s+\(', remaining_after_stripped):
+                    score += 35  # Likely team, followed by decision code
                 
                 candidates.append((score, pos, end_pos, content))
+                
+                # Stop if we found a good candidate (likely team, not nickname)
+                # This prevents us from picking up decision code parentheses later
+                if score >= 20:
+                    found_good_candidate = True
+                
                 pos = end_pos
             else:
                 pos += 1
@@ -552,12 +607,76 @@ def _normalize_team_name(team: Optional[str]) -> Optional[str]:
 
 
 def _apply_name_team_conversions(out: Dict[str, Any]) -> Dict[str, Any]:
-    # Check for empty or invalid loser names (e.g., "()", empty string, or only whitespace)
+    # Check if both winner and loser names are empty or invalid - treat as bye (no data)
+    winner_name = out.get("winner_name", "")
     loser_name = out.get("loser_name", "")
+    
+    winner_name_clean = winner_name.strip() if winner_name and isinstance(winner_name, str) else ""
+    loser_name_clean = loser_name.strip() if loser_name and isinstance(loser_name, str) else ""
+    
+    winner_empty = not winner_name_clean or winner_name_clean in ["()", "[]", "{}"]
+    loser_empty = not loser_name_clean or loser_name_clean in ["()", "[]", "{}"]
+    
+    # Special case: DFF/DDQ with only one participant identified - treat as bye
+    decision_type_code = out.get("decision_type_code", "")
+    if decision_type_code and isinstance(decision_type_code, str) and decision_type_code.upper() in ["DFF", "DDQ"]:
+        if winner_empty and loser_empty:
+            # Both empty - treat as complete bye with no wrestler
+            out["decision_type"] = "bye"
+            out["decision_type_code"] = "Bye"
+            out["bye"] = True
+            out["winner_name"] = None
+            out["winner_team"] = None
+            out["loser_name"] = None
+            out["loser_team"] = None
+            out["winner_points"] = None
+            out["loser_points"] = None
+            out["fall_time"] = None
+            return out
+        elif winner_empty or loser_empty:
+            # Only one wrestler identified in a DFF/DDQ - treat as bye
+            # Keep the one valid wrestler as winner
+            if winner_empty and not loser_empty:
+                # Swap so the valid wrestler is the winner
+                out["winner_name"] = out.get("loser_name")
+                out["winner_team"] = out.get("loser_team")
+                out["loser_name"] = None
+                out["loser_team"] = None
+            elif not winner_empty:
+                # Winner is valid, clear loser
+                out["loser_name"] = None
+                out["loser_team"] = None
+            out["decision_type"] = "bye"
+            out["decision_type_code"] = "Bye"
+            out["bye"] = True
+            out["winner_points"] = None
+            out["loser_points"] = None
+            out["fall_time"] = None
+            # Normalize the valid wrestler's name/team before returning
+            if out.get("winner_name"):
+                out["winner_name"] = _normalize_person_name(out["winner_name"])  # type: ignore[arg-type]
+            if out.get("winner_team"):
+                out["winner_team"] = _normalize_team_name(out["winner_team"])  # type: ignore[arg-type]
+            return out
+    
+    if winner_empty and loser_empty:
+        # Both participants are empty - no valid data, treat as bye
+        out["decision_type"] = "bye"
+        out["decision_type_code"] = "Bye"
+        out["bye"] = True
+        out["winner_name"] = None
+        out["winner_team"] = None
+        out["loser_name"] = None
+        out["loser_team"] = None
+        out["winner_points"] = None
+        out["loser_points"] = None
+        out["fall_time"] = None
+        return out
+    
+    # Check for empty or invalid loser names (e.g., "()", empty string, or only whitespace)
     if loser_name and isinstance(loser_name, str):
-        loser_name_clean = loser_name.strip()
         # Treat as forfeit/bye if loser name is empty, "()", or similar invalid values
-        if not loser_name_clean or loser_name_clean in ["()", "[]", "{}"]:
+        if loser_empty:
             out["decision_type"] = "forfeit"
             out["decision_type_code"] = "For."
             out["bye"] = False  # Forfeit still counts for Elo (winner gets credit)
@@ -568,8 +687,25 @@ def _apply_name_team_conversions(out: Dict[str, Any]) -> Dict[str, Any]:
             out["fall_time"] = None
             return out
         
-        # Check if loser name starts with "Forfeit" (e.g., "Forfeit", "Forfeit Forfeit", "Forfeit Bye") - treat as bye
-        if loser_name_clean.lower().startswith("forfeit"):
+        # Check if loser name is placeholder forfeit/bye text - treat as bye
+        # Use word boundaries to avoid matching hyphenated names like "Robinson-Forfeit"
+        loser_lower = loser_name_clean.lower()
+        # Strip leading/trailing punctuation and check again (handles cases like ". bye")
+        loser_stripped = loser_lower.strip(" .,-;:!?")
+        
+        is_forfeit_placeholder = (
+            loser_lower.startswith("forfeit ") or  # "Forfeit Bye", "Forfeit Forfeit"
+            loser_lower == "forfeit" or  # Just "Forfeit"
+            loser_lower.endswith(" forfeit") or  # "Medical Forfeit"
+            loser_stripped == "forfeit"  # ". forfeit", etc.
+        )
+        is_bye_placeholder = (
+            loser_lower.startswith("bye ") or  # "Bye Bye"
+            loser_lower == "bye" or  # Just "Bye"
+            loser_lower.endswith(" bye") or  # "Medical Bye"
+            loser_stripped == "bye"  # ". bye", etc.
+        )
+        if is_forfeit_placeholder or is_bye_placeholder:
             out["decision_type"] = "bye"
             out["decision_type_code"] = "Bye"
             out["bye"] = True
@@ -693,7 +829,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
 
     # DFF (double forfeit) or DDQ (double disqualification) case: "A (Team) and B (Team) DFF/DDQ"
     if "dff" in rest.lower() or "ddq" in rest.lower():
-        m = _re.search(r"^(?P<a>.+?) \((?P<ateam>.*?)\)(?:\s+\d+-\d+)?\s+and\s+(?P<b>.+?) \((?P<bteam>.*?)\)(?:\s+\d+-\d+)?\s+(?:\((?P<code>DFF|DDQ)\)|(?P<code2>DFF|DDQ))$", rest, _re.I)
+        m = _re.search(r"^(?P<a>.*?)\s*\((?P<ateam>.*?)\)(?:\s+\d+-\d+)?\s+and\s+(?P<b>.*?)\s*\((?P<bteam>.*?)\)(?:\s+\d+-\d+)?\s+(?:\((?P<code>DFF|DDQ)\)|(?P<code2>DFF|DDQ))$", rest, _re.I)
         if m:
             # Store both participants; treat as a bye to skip Elo
             out["winner_name"] = m.group("a").strip()
@@ -914,7 +1050,7 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
         r"^(?P<win>.+?)\s+\((?P<wteam>.*?)\)(?:\s+\d+-\d+)?\s+won by\s+(?P<dtype>.+?)\s+over\s+"
         r"(?P<lose>.+?)\s+\((?P<lteam>.*?)\)(?:\s+\d+-\d+)?\s+"
         r"(?:\((?P<dcode_paren>[A-Za-z0-9][A-Za-z0-9. -]*?)(?:\s+(?P<ftime_paren>\d+:\d+))?(?:\s+\((?P<score_paren_nested>\d+-\d+)\)|(?:\s+(?P<score_paren>\d+-\d+)))?\)"
-        r"|(?P<dcode>(?![0-9]+-[0-9]+)[A-Za-z0-9-]+)(?:\s+\((?P<dnote>[^)]+)\))?(?:\s+(?P<score>\d+-\d+)|\s+(?P<ftime>\d+:\d+))?)$",
+        r"|(?P<dcode>(?![0-9]+-[0-9]+)[A-Za-z0-9. -]+?)(?:\s+\((?P<dnote>[^)]+)\))?(?:\s+(?P<score>\d+-\d+)|\s+(?P<ftime>\d+:\d+))?)$",
         rest,
         _re.I,
     )
@@ -939,6 +1075,9 @@ def parse_match_text(raw_text: str) -> Dict[str, Any]:
             out["fall_time"] = ftime
         elif ftime and "tech" in out["decision_type"]:
             # Tech fall can also have a time
+            out["fall_time"] = ftime
+        elif ftime and "injury" in out["decision_type"]:
+            # Injury default can also have a time
             out["fall_time"] = ftime
         if score:
             try:
@@ -1212,8 +1351,8 @@ def run(reparse: bool = False) -> None:
 
     # If reparse is enabled, delete all matches and history once at the start for efficiency
     if reparse:
-        matches_deleted, history_deleted = delete_all_matches(conn)
-        logger.info("Deleted %d matches and %d wrestler_history records for reparse", matches_deleted, history_deleted)
+        matches_deleted, history_deleted, wrestlers_deleted = delete_all_matches(conn)
+        logger.info("Deleted %d matches, %d wrestler_history records, and %d wrestlers for reparse", matches_deleted, history_deleted, wrestlers_deleted)
         conn.commit()
 
     logger.info("Parsing %d rounds...", len(rows))

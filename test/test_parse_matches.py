@@ -40,6 +40,21 @@ TEST_CASES = [
     ),
     
     TestCase(
+        name="DFF with only one wrestler (should be bye)",
+        input_text="Quarterfinal -   ()  and Kevin Ford (George Wythe) 1-1 (DFF)",
+        expected={
+            "round_detail": "Quarterfinal",
+            "winner_name": "Kevin Ford",
+            "winner_team": "George Wythe",
+            "loser_name": None,
+            "loser_team": None,
+            "decision_type": "bye",
+            "decision_type_code": "Bye",
+            "bye": True,
+        }
+    ),
+    
+    TestCase(
         name="Empty loser name (forfeit)",
         input_text="Champ. Round 1 - Aiden Blackwelder (Glen Allen) 9-6 won by forfeit over () (For.)",
         expected={
@@ -85,6 +100,279 @@ TEST_CASES = [
     ),
     
     TestCase(
+        name="Medical Forfeit loser name (should be bye)",
+        input_text="Cons. Round 4 - Natalie Zavala (Martinsville) 4-7 won by forfeit over Medical Forfeit (Rustburg) 7-3 (For.)",
+        expected={
+            "round_detail": "Cons. Round 4",
+            "winner_name": "Natalie Zavala",
+            "winner_team": "Martinsville",
+            "decision_type": "bye",
+            "decision_type_code": "Bye",
+            "loser_name": None,
+            "loser_team": None,
+            "bye": True,
+        }
+    ),
+    
+    TestCase(
+        name="Remove (FORFEIT) from loser name",
+        input_text="Quarterfinal - Christopher Floyd (Martinsville) 14-14 won by forfeit over Devin Rader (FORFEIT) (Radford) 6-7 (For.)",
+        expected={
+            "round_detail": "Quarterfinal",
+            "winner_name": "Christopher Floyd",
+            "winner_team": "Martinsville",
+            "decision_type": "forfeit",
+            "loser_name": "Devin Rader",
+            "loser_team": "Radford",
+            "decision_type_code": "For.",
+            "bye": False,
+        }
+    ),
+    
+    TestCase(
+        name="Remove (NS) from winner name",
+        input_text="Cons. Round 3 - Gavin Small (NS) (James Wood High School) 3-2 won by fall over Elber Fuentes (Liberty (Bealeton)) 1-2 (Fall 2:55)",
+        expected={
+            "round_detail": "Cons. Round 3",
+            "winner_name": "Gavin Small",
+            "winner_team": "James Wood",
+            "decision_type": "fall",
+            "loser_name": "Elber Fuentes",
+            "loser_team": "Liberty (Bealeton)",
+            "decision_type_code": "Fall",
+            "fall_time": "2:55",
+        }
+    ),
+    
+    TestCase(
+        name="Bye Bye loser name (should be bye)",
+        input_text="Round 1 - Xavier Nieves (Colgan) 20-8 won by forfeit over Bye Bye (Tuscarora) 1-4 (For.)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "Xavier Nieves",
+            "winner_team": "Colgan",
+            "decision_type": "bye",
+            "decision_type_code": "Bye",
+            "loser_name": None,
+            "loser_team": None,
+            "bye": True,
+        }
+    ),
+    
+    TestCase(
+        name="'. bye' loser name with punctuation (should be bye)",
+        input_text="Round 1 - Isaiah Hodel (James Wood) 30-4 won by forfeit over . bye () 0-4 (For.)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "Isaiah Hodel",
+            "winner_team": "James Wood",
+            "decision_type": "bye",
+            "decision_type_code": "Bye",
+            "loser_name": None,
+            "loser_team": None,
+            "bye": True,
+        }
+    ),
+    
+    TestCase(
+        name="Remove seed number (1) from winner name",
+        input_text="Champ. Round 1 - Maima Dandai  (1) (Charlottesville High School) 1-3 won by forfeit over Kyelle Hicks (Armstrong High School) 0-2 (For.)",
+        expected={
+            "round_detail": "Champ. Round 1",
+            "winner_name": "Maima Dandai",
+            "winner_team": "Charlottesville",
+            "decision_type": "forfeit",
+            "loser_name": "Kyelle Hicks",
+            "loser_team": "Armstrong",
+            "decision_type_code": "For.",
+            "bye": False,
+        }
+    ),
+    
+    TestCase(
+        name="Both winner and loser empty (should be bye - no data)",
+        input_text="2nd Place Match -   ()  won by no contest over   ()  (NC)",
+        expected={
+            "round_detail": "2nd Place Match",
+            "winner_name": None,
+            "winner_team": None,
+            "decision_type": "bye",
+            "loser_name": None,
+            "loser_team": None,
+            "decision_type_code": "Bye",
+            "bye": True,
+        }
+    ),
+    
+    TestCase(
+        name="'over' format with TB-2 (Fall) - plain text from HTML",
+        input_text="Isaac Hegg  (Oakton)  over  Quincy Hinrichs (Warhill)  TB-2 (Fall) 0:48",
+        expected={
+            "winner_name": "Isaac Hegg",
+            "winner_team": "Oakton",
+            "decision_type": "fall",
+            "loser_name": "Quincy Hinrichs",
+            "loser_team": "Warhill",
+            "decision_type_code": "TB-2",
+            "fall_time": "0:48",
+        }
+    ),
+    
+    TestCase(
+        name="Remove seed number prefix '11/' from winner name",
+        input_text="3rd Place Match - 11/Dustin Tucker (Patrick County) 27-8 won by fall over Angel Santiago (Hidden Valley) 25-21 (Fall 2:24)",
+        expected={
+            "round_detail": "3rd Place Match",
+            "winner_name": "Dustin Tucker",
+            "winner_team": "Patrick County",
+            "decision_type": "fall",
+            "loser_name": "Angel Santiago",
+            "loser_team": "Hidden Valley",
+            "decision_type_code": "Fall",
+            "fall_time": "2:24",
+        }
+    ),
+    
+    TestCase(
+        name="Replace pound sign sequences with 'Unknown Wrestler'",
+        input_text="Champ. Round 2 - ######### ######### (Mountain View) 9-7 won by fall over Tanner Kump (Patrick Henry – A) 10-12 (Fall 5:10)",
+        expected={
+            "round_detail": "Champ. Round 2",
+            "winner_name": "Unknown Wrestler",
+            "winner_team": "Mountain View",
+            "decision_type": "fall",
+            "loser_name": "Tanner Kump",
+            "loser_team": "Patrick Henry – A",
+            "decision_type_code": "Fall",
+            "fall_time": "5:10",
+        }
+    ),
+    
+    TestCase(
+        name="Remove leading parenthesis and handle nested nickname (RJ (Ranjit) Roberts)",
+        input_text="Champ. Round 2 - Wilmer Bonilla Banegas (John Lewis) 7-7 won by fall over (RJ (Ranjit) Roberts (Oakton) 0-2 (Fall 1:14)",
+        expected={
+            "round_detail": "Champ. Round 2",
+            "winner_name": "Wilmer Bonilla Banegas",
+            "winner_team": "John Lewis",
+            "decision_type": "fall",
+            "loser_name": "RJ (Ranjit) Roberts",
+            "loser_team": "Oakton",
+            "decision_type_code": "Fall",
+            "fall_time": "1:14",
+        }
+    ),
+    
+    TestCase(
+        name="Replace ' - ' with '-' in names (Villa - Soto -> Villa-Soto)",
+        input_text="Cons. Round 2 - Raul Villa - Soto (Clarke County) 11-9 won by fall over Will Pallela (Alleghany) 5-6 (Fall 2:45)",
+        expected={
+            "round_detail": "Cons. Round 2",
+            "winner_name": "Raul Villa-Soto",
+            "winner_team": "Clarke County",
+            "decision_type": "fall",
+            "loser_name": "Will Pallela",
+            "loser_team": "Alleghany",
+            "decision_type_code": "Fall",
+            "fall_time": "2:45",
+        }
+    ),
+    
+    TestCase(
+        name="Remove ' - *' suffix from names (Adam Preston - * -> Adam Preston)",
+        input_text="Round 3 - Adam Preston - * (Franklin County) won by major decision over Brent Bowling (Franklin County) Maj 12-3",
+        expected={
+            "round_detail": "Round 3",
+            "winner_name": "Adam Preston",
+            "winner_team": "Franklin County",
+            "decision_type": "major decision",
+            "loser_name": "Brent Bowling",
+            "loser_team": "Franklin County",
+            "decision_type_code": "Maj",
+            "winner_points": 12,
+            "loser_points": 3,
+        }
+    ),
+    
+    TestCase(
+        name="Normalize acronyms with spaces (C J -> CJ)",
+        input_text="Round 1 - C J Smith (Team A) 5-0 won by decision over John Doe (Team B) 3-2 (Dec 7-3)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "CJ Smith",
+            "winner_team": "Team A",
+            "decision_type": "decision",
+            "loser_name": "John Doe",
+            "loser_team": "Team B",
+            "decision_type_code": "Dec",
+            "winner_points": 7,
+            "loser_points": 3,
+        }
+    ),
+    
+    TestCase(
+        name="Normalize acronyms with periods (C.J. -> CJ)",
+        input_text="Round 2 - C.J. Williams (Team C) 4-1 won by fall over Jane Smith (Team D) 2-3 (Fall 1:23)",
+        expected={
+            "round_detail": "Round 2",
+            "winner_name": "CJ Williams",
+            "winner_team": "Team C",
+            "decision_type": "fall",
+            "loser_name": "Jane Smith",
+            "loser_team": "Team D",
+            "decision_type_code": "Fall",
+            "fall_time": "1:23",
+        }
+    ),
+    
+    TestCase(
+        name="Normalize acronyms with > characters (C>J> -> CJ)",
+        input_text="Round 3 - C>J> Jones (Team E) 6-0 won by tech fall over Bob Lee (Team F) 1-4 (TF 15-0)",
+        expected={
+            "round_detail": "Round 3",
+            "winner_name": "CJ Jones",
+            "winner_team": "Team E",
+            "decision_type": "tech fall",
+            "loser_name": "Bob Lee",
+            "loser_team": "Team F",
+            "decision_type_code": "TF",
+            "winner_points": 15,
+            "loser_points": 0,
+        }
+    ),
+    
+    TestCase(
+        name="Normalize multi-letter acronyms (A.J.K. -> AJK)",
+        input_text="Round 1 - A.J.K. Rodriguez (Team G) 3-1 won by decision over Mike Davis (Team H) 2-2 (Dec 5-2)",
+        expected={
+            "round_detail": "Round 1",
+            "winner_name": "AJK Rodriguez",
+            "winner_team": "Team G",
+            "decision_type": "decision",
+            "loser_name": "Mike Davis",
+            "loser_team": "Team H",
+            "decision_type_code": "Dec",
+            "winner_points": 5,
+            "loser_points": 2,
+        }
+    ),
+    
+    TestCase(
+        name="Injury default decision type",
+        input_text="Semifinal - Ryan Kaviani (Langley) won by injury default over Jack Flood (Yorktown) Inj. 4:45",
+        expected={
+            "round_detail": "Semifinal",
+            "winner_name": "Ryan Kaviani",
+            "winner_team": "Langley",
+            "decision_type": "injury default",
+            "loser_name": "Jack Flood",
+            "loser_team": "Yorktown",
+            "decision_type_code": "Inj.",
+            "fall_time": "4:45",
+        }
+    ),
+    
+    TestCase(
         name="Double overtime (2-OT)",
         input_text="3rd Place Match - nana utsey (Glen Allen) 17-3 won in double overtime over Kenneth Hamilton (Gloucester) 16-3 (2-OT 7-5)",
         expected={
@@ -101,12 +389,12 @@ TEST_CASES = [
     ),
     
     TestCase(
-        name="Hyphen in name (Sampson - Johnson)",
+        name="Hyphen in name (Sampson - Johnson -> Sampson-Johnson)",
         input_text="Jamil Reyes (Osbourn) over Jadin Sampson - Johnson (Chancellor) Fall 3:34",
         expected={
             "winner_name": "Jamil Reyes",
             "winner_team": "Osbourn",
-            "loser_name": "Jadin Sampson - Johnson",
+            "loser_name": "Jadin Sampson-Johnson",
             "loser_team": "Chancellor",
             "decision_type": "fall",
             "fall_time": "3:34",
