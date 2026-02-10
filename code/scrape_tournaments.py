@@ -108,6 +108,7 @@ EXCLUDED_TOURNAMENT_IDS = [
     "962259132", #'Battle at the Burgh
     "940550132", #'SECTION 9 DUALS-D1
     "938862132", #'Bert Ernst Memorial
+    "930886132", #'2026 BayRiver`s JV Districts
 ]
 
 def _get_timestamp() -> str:

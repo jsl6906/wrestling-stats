@@ -152,7 +152,7 @@ def delete_all_matches(conn: duckdb.DuckDBPyConnection) -> tuple[int, int, int]:
     matches_count = matches_result[0] if matches_result else 0
     
     wrestlers_result = conn.execute("""--sql
-        SELECT COUNT(*) FROM wrestler
+        SELECT COUNT(*) FROM wrestlers
     """).fetchone()
     wrestlers_count = wrestlers_result[0] if wrestlers_result else 0
     
@@ -168,7 +168,7 @@ def delete_all_matches(conn: duckdb.DuckDBPyConnection) -> tuple[int, int, int]:
     
     # Delete all wrestlers
     conn.execute("""--sql
-        DELETE FROM wrestler
+        DELETE FROM wrestlers
     """)
     
     return matches_count, history_count, wrestlers_count
@@ -329,9 +329,14 @@ NAME_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     # Normalize acronyms step 3: remove spaces between single capital letters that form acronyms
     # Match single capital + space + single capital at word boundary (prevents "Jordan Lee" from matching)
     (r"\b([A-Z])\s+(?=[A-Z]\b)", r"\1"),
+    # Remove all remaining periods from names (e.g., "Michael J. Murphy" -> "Michael J Murphy")
+    # Must come after acronym normalization to avoid interfering with those patterns
+    (r"\.", ""),
     # Remove ' - *' suffix from names (e.g., "Adam Preston - *" -> "Adam Preston")
     # Must come before general space-dash-space replacement
     (r"\s+-\s+\*$", ""),
+    # Remove trailing ' *' from names (e.g., "Brian Flanagan *" -> "Brian Flanagan")
+    (r"\s+\*$", ""),
     # Replace space-dash-space with dash (e.g., "Villa - Soto" -> "Villa-Soto")
     (r"\s+-\s+", "-"),
 
@@ -339,14 +344,21 @@ NAME_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     (r"\s*\(correct\)", ""),
     # Remove leading opening parentheses (typos in HTML)
     (r"^\(+", ""),
-    # Remove parenthetical forfeit/bye markers from names (e.g., "Devin Rader (FORFEIT)" -> "Devin Rader")
-    (r"\s*\((?:FORFEIT|BYE|DFF|DDQ|UNKNOWN|NS)\)", ""),
+    # Remove parenthetical forfeit/bye markers from names (e.g., "Devin Rader (FORFEIT)", "Cameron (dq)" -> "Devin Rader", "Cameron")
+    (r"\s*\((?:FORFEIT|BYE|DFF|DDQ|DQ|UNKNOWN|NS)\)", ""),
     # Remove parenthetical seed numbers from names (e.g., "Maima Dandai (1)" -> "Maima Dandai")
     (r"\s*\(\d+\)", ""),
     # Remove seed number prefixes with slashes from names (e.g., "11/Dustin Tucker" -> "Dustin Tucker")
     (r"^\d+/", ""),
+    # Replace '/' with '-' in names (e.g., "Antonio Felix/Truglio" -> "Antonio Felix-Truglio")
+    # Must come after seed number removal to avoid interfering with "11/Name" patterns
+    (r"/", "-"),
     # Remove forfeit/bye suffixes from names (e.g., "John Doe-Forfeit" -> "John Doe")
     (r"-\s*(?:Forfeit|Bye|DFF|DDQ|Unknown|Forfiet)\b", ""),
+    # Remove standalone FORFEIT/DQ words from names (e.g., "Asher FORFEIT Berrebi FORFEIT" -> "Asher Berrebi")
+    # Must come after parenthetical and suffix removal to avoid conflicts
+    # Use word boundaries to match whole words, with optional surrounding spaces
+    (r"\s*\b(?:FORFEIT|DQ)\b\s*", " "),
     # Remove any digits present in names (e.g., 'John 2 Doe' -> 'John Doe')
     (r"\d+", ""),
 ]
@@ -366,6 +378,8 @@ TEAM_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     (r".*(APW/PUL|Altmar-Parish-Williamstown).*", "Altmar-Parish-Williamstown (Pulaski)"),
     
     # General cleanup rules (apply after specific transformations)
+    # Remove all periods from team names (e.g., "Franklin D. Roosevelt" -> "Franklin D Roosevelt")
+    (r"\.", ""),
     (r"\s+Wrestling\s+Academy\b", ""),
     (r"\s+Wrestling\s+Club\b", ""),
     (r"\s+Youth\s+Wrestling\b", ""),
@@ -377,10 +391,16 @@ TEAM_CONVERSIONS_RAW: List[Tuple[str, str]] = [
     (r"\s+Jr\s+HS\b", ""),
     (r"\s+HS\b", ""),
     (r"\s+Jr\b", ""),
+    # Remove PSAL suffix (e.g., "Benjamin Cardozo HS - PSAL" -> "Benjamin Cardozo")
+    (r"\s*-\s*PSAL\s*$", ""),
     # Remove dash followed by numbers (e.g., "Team-2" -> "Team")
     (r"-\d+$", ""),
     # Remove dash followed by a single letter (e.g., "Team-A" -> "Team", "Team- C" -> "Team")
     (r"-\s*[A-Za-z]$", ""),
+    # Remove space followed by a single letter (e.g., "St Christopher`s A" -> "St Christopher`s")
+    (r"\s+[A-Za-z]$", ""),
+    # Remove trailing dashes and en-dashes (e.g., "Patrick Henry –" -> "Patrick Henry")
+    (r"\s*[-–]\s*$", ""),
 ]
 
 NAME_CONVERSIONS = [(re.compile(pat, re.IGNORECASE), repl) for pat, repl in NAME_CONVERSIONS_RAW]
@@ -551,7 +571,8 @@ def _parse_wrestler_team_first(text: str) -> tuple[Optional[str], Optional[str],
                 # Check for decision code patterns after this parenthesis
                 remaining_after_stripped = text[end_pos:].lstrip()
                 # If followed by decision code patterns like "TB-2", "Fall", "Dec", this is probably the team
-                if _re.match(r'^[A-Z]{2,}-?\d*\s+\(', remaining_after_stripped):
+                # Decision codes are typically short (2-6 chars) and may have hyphens/digits
+                if _re.match(r'^[A-Z]{2,6}(?:-\d+)?(?:\s+\(|$)', remaining_after_stripped):
                     score += 35  # Likely team, followed by decision code
                 
                 candidates.append((score, pos, end_pos, content))
@@ -591,6 +612,8 @@ def _parse_wrestler_team_first(text: str) -> tuple[Optional[str], Optional[str],
 def _normalize_person_name(name: Optional[str]) -> Optional[str]:
     if not name:
         return name
+    # Strip leading commas and spaces (e.g., ", Christopher Leite" -> "Christopher Leite")
+    name = name.lstrip(', ')
     # First apply title case to handle lowercase names like "anthony gleeson"
     # This converts to "Anthony Gleeson"
     name_titled = name.title()

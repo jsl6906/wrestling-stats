@@ -75,7 +75,7 @@ TEST_CASES = [
         expected={
             "round_detail": "Cons. Round 1",
             "winner_name": "Vernon Dudley",
-            "winner_team": "E. C. Glass",
+            "winner_team": "E C Glass",
             "decision_type": "bye",
             "decision_type_code": "Bye",
             "loser_name": None,
@@ -242,7 +242,7 @@ TEST_CASES = [
             "winner_team": "Mountain View",
             "decision_type": "fall",
             "loser_name": "Tanner Kump",
-            "loser_team": "Patrick Henry – A",
+            "loser_team": "Patrick Henry",
             "decision_type_code": "Fall",
             "fall_time": "5:10",
         }
@@ -300,10 +300,10 @@ TEST_CASES = [
         expected={
             "round_detail": "Round 1",
             "winner_name": "CJ Smith",
-            "winner_team": "Team A",
+            "winner_team": "Team",
             "decision_type": "decision",
             "loser_name": "John Doe",
-            "loser_team": "Team B",
+            "loser_team": "Team",
             "decision_type_code": "Dec",
             "winner_points": 7,
             "loser_points": 3,
@@ -316,10 +316,10 @@ TEST_CASES = [
         expected={
             "round_detail": "Round 2",
             "winner_name": "CJ Williams",
-            "winner_team": "Team C",
+            "winner_team": "Team",
             "decision_type": "fall",
             "loser_name": "Jane Smith",
-            "loser_team": "Team D",
+            "loser_team": "Team",
             "decision_type_code": "Fall",
             "fall_time": "1:23",
         }
@@ -331,10 +331,10 @@ TEST_CASES = [
         expected={
             "round_detail": "Round 3",
             "winner_name": "CJ Jones",
-            "winner_team": "Team E",
+            "winner_team": "Team",
             "decision_type": "tech fall",
             "loser_name": "Bob Lee",
-            "loser_team": "Team F",
+            "loser_team": "Team",
             "decision_type_code": "TF",
             "winner_points": 15,
             "loser_points": 0,
@@ -347,10 +347,10 @@ TEST_CASES = [
         expected={
             "round_detail": "Round 1",
             "winner_name": "AJK Rodriguez",
-            "winner_team": "Team G",
+            "winner_team": "Team",
             "decision_type": "decision",
             "loser_name": "Mike Davis",
-            "loser_team": "Team H",
+            "loser_team": "Team",
             "decision_type_code": "Dec",
             "winner_points": 5,
             "loser_points": 2,
@@ -519,10 +519,10 @@ TEST_CASES = [
         expected={
             "round_detail": "Round 1",
             "winner_name": "John Smith",
-            "winner_team": "Team A",
+            "winner_team": "Team",
             "decision_type": "fall",
             "loser_name": "Jane Doe",
-            "loser_team": "Team B",
+            "loser_team": "Team",
             "decision_type_code": "Fall",
             "fall_time": "2:15",
         }
@@ -579,10 +579,10 @@ TEST_CASES = [
         expected={
             "round_detail": "Round 1",
             "winner_name": "Matteo Corsini",
-            "winner_team": "Team A",
+            "winner_team": "Team",
             "decision_type": "decision",
             "loser_name": "James Brown",
-            "loser_team": "Team B",
+            "loser_team": "Team",
             "decision_type_code": "Dec",
             "winner_points": 7,
             "loser_points": 2,
@@ -706,7 +706,7 @@ TEST_CASES = [
             "winner_team": "Altmar-Parish-Williamstown (Pulaski)",
             "decision_type": "decision",
             "loser_name": "Jane Smith",
-            "loser_team": "Team B",
+            "loser_team": "Team",
             "decision_type_code": "Dec",
             "winner_points": 7,
             "loser_points": 3,
@@ -722,7 +722,7 @@ TEST_CASES = [
             "winner_team": "Altmar-Parish-Williamstown (Pulaski)",
             "decision_type": "fall",
             "loser_name": "Bob Green",
-            "loser_team": "Team C",
+            "loser_team": "Team",
             "decision_type_code": "Fall",
             "fall_time": "3:45",
         }
@@ -773,6 +773,154 @@ TEST_CASES = [
             "decision_type_code": "Dec",
             "winner_points": 8,
             "loser_points": 5,
+        }
+    ),
+    
+    TestCase(
+        name="Nickname in parentheses with 'over' format and 'Sr HS' suffix removal",
+        input_text="Rowan Kim (Saratoga Springs Sr HS) over DAVID (PULI) BARCLAY (Burnt Hills Sr HS) Fall 1:23",
+        expected={
+            "winner_name": "Rowan Kim",
+            "winner_team": "Saratoga Springs",
+            "loser_name": "David (Puli) Barclay",
+            "loser_team": "Burnt Hills",
+            "decision_type": "fall",
+            "decision_type_code": "Fall",
+            "fall_time": "1:23",
+        }
+    ),
+    
+    TestCase(
+        name="Leading comma and space in loser name",
+        input_text="Round 2 - Carmine Gerbino (John Glen) won by fall over , Christopher Leite (Commack) Fall 0:56",
+        expected={
+            "round_detail": "Round 2",
+            "winner_name": "Carmine Gerbino",
+            "winner_team": "John Glen",
+            "loser_name": "Christopher Leite",
+            "loser_team": "Commack",
+            "decision_type": "fall",
+            "decision_type_code": "Fall",
+            "fall_time": "0:56",
+        }
+    ),
+    
+    TestCase(
+        name="Replace '/' with '-' in names (Felix/Truglio -> Felix-Truglio)",
+        input_text="Champ. Round 1 - Antonio Felix/Truglio (Minisink Valley) won by decision over Justin Landusky (Monroe Woodbury Sr HS) Dec 11-8",
+        expected={
+            "round_detail": "Champ. Round 1",
+            "winner_name": "Antonio Felix-Truglio",
+            "winner_team": "Minisink Valley",
+            "loser_name": "Justin Landusky",
+            "loser_team": "Monroe Woodbury",
+            "decision_type": "decision",
+            "decision_type_code": "Dec",
+            "winner_points": 11,
+            "loser_points": 8,
+        }
+    ),
+    
+    TestCase(
+        name="Remove trailing ' *' from names (Brian Flanagan * -> Brian Flanagan)",
+        input_text="Quarterfinal - Brian Flanagan * (MacArthur (General Douglas) HS) won by fall over Nikita Strattichuk (Manhasset Sr HS) Fall 0:56",
+        expected={
+            "round_detail": "Quarterfinal",
+            "winner_name": "Brian Flanagan",
+            "winner_team": "Macarthur (General Douglas)",
+            "loser_name": "Nikita Strattichuk",
+            "loser_team": "Manhasset",
+            "decision_type": "fall",
+            "decision_type_code": "Fall",
+            "fall_time": "0:56",
+        }
+    ),
+    
+    TestCase(
+        name="Remove standalone FORFEIT words from names (Asher FORFEIT Berrebi FORFEIT -> Asher Berrebi)",
+        input_text="Champ. Round 1 - Asher  FORFEIT Berrebi  FORFEIT (Hackley School) 5-3 won by fall over Aaron Keizer (Eastchester) 4-6 (Fall 0:00)",
+        expected={
+            "round_detail": "Champ. Round 1",
+            "winner_name": "Asher Berrebi",
+            "winner_team": "Hackley",
+            "loser_name": "Aaron Keizer",
+            "loser_team": "Eastchester",
+            "decision_type": "fall",
+            "decision_type_code": "Fall",
+            "fall_time": "0:00",
+        }
+    ),
+    
+    TestCase(
+        name="Remove '(dq)' from loser name (Cameron Crumpler (dq) -> Cameron Crumpler)",
+        input_text="1st Place Match - Parker Brenon (Williamsville North) won by forfeit over Cameron Crumpler (dq) (Niagara Falls) FF",
+        expected={
+            "round_detail": "1st Place Match",
+            "winner_name": "Parker Brenon",
+            "winner_team": "Williamsville North",
+            "loser_name": "Cameron Crumpler",
+            "loser_team": "Niagara Falls",
+            "decision_type": "forfeit",
+        }
+    ),
+    
+    TestCase(
+        name="Remove periods from names and teams (Michael J. Murphy / Franklin D. Roosevelt)",
+        input_text="Quarterfinal - Michael J. Murphy (Massapequa) won by fall over Lazare Chikhradze (Franklin D. Roosevelt) Fall 0:52",
+        expected={
+            "round_detail": "Quarterfinal",
+            "winner_name": "Michael J Murphy",
+            "winner_team": "Massapequa",
+            "loser_name": "Lazare Chikhradze",
+            "loser_team": "Franklin D Roosevelt",
+            "decision_type": "fall",
+            "decision_type_code": "Fall",
+            "fall_time": "0:52",
+        }
+    ),
+    
+    TestCase(
+        name="Remove PSAL suffix from team names (Benjamin Cardozo HS - PSAL)",
+        input_text="Semifinal - Tyler Callahan (Rocky Point ) won by fall over Giuliano Vitale (Benjamin Cardozo HS - PSAL) Fall 0:53",
+        expected={
+            "round_detail": "Semifinal",
+            "winner_name": "Tyler Callahan",
+            "winner_team": "Rocky Point",
+            "loser_name": "Giuliano Vitale",
+            "loser_team": "Benjamin Cardozo",
+            "decision_type": "fall",
+            "decision_type_code": "Fall",
+            "fall_time": "0:53",
+        }
+    ),
+    
+    TestCase(
+        name="Remove 'H.s.' suffix from team names (Long Island Lutheran H.s.)",
+        input_text="Semifinal - Peter Morris (MacArthur HS) 2-1 won by fall over Javaughn Carr (Long Island Lutheran H.s.) 3-1 (Fall 5:28)",
+        expected={
+            "round_detail": "Semifinal",
+            "winner_name": "Peter Morris",
+            "winner_team": "MacArthur",
+            "loser_name": "Javaughn Carr",
+            "loser_team": "Long Island Lutheran",
+            "decision_type": "fall",
+            "decision_type_code": "Fall",
+            "fall_time": "5:28",
+        }
+    ),
+    
+    TestCase(
+        name="Remove single letter suffix from team names (St. Christopher`s A)",
+        input_text="Semifinal - William Kelly (St. Christopher`s A) 7-4 won by fall over Chantz Brown (Brookville) 3-2 (Fall 1:00)",
+        expected={
+            "round_detail": "Semifinal",
+            "winner_name": "William Kelly",
+            "winner_team": "St Christopher`s",
+            "loser_name": "Chantz Brown",
+            "loser_team": "Brookville",
+            "decision_type": "fall",
+            "decision_type_code": "Fall",
+            "fall_time": "1:00",
         }
     ),
 ]
