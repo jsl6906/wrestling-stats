@@ -622,6 +622,72 @@ def fetch_matches_ordered(conn: duckdb.DuckDBPyConnection, incremental: bool = T
 	return rows
 
 
+def check_for_out_of_sequence_matches(conn: duckdb.DuckDBPyConnection, rows: List[Tuple[Any, ...]], log: logging.Logger) -> None:
+	"""Check if any new matches to be processed fall within the date range of already-processed matches.
+	
+	This warns the user if newly parsed matches are "out of sequence" - e.g., a match from 2 years ago
+	that was just scraped but falls chronologically in the middle of matches that already have Elo computed.
+	"""
+	if not rows:
+		return
+	
+	# Get the date range of matches that already have ELO computed
+	result = conn.execute("""--sql
+		SELECT MIN(t.start_date) as min_date, MAX(t.start_date) as max_date
+		FROM matches m
+		JOIN tournaments t ON t.event_id = m.event_id
+		WHERE m.elo_computed_at IS NOT NULL
+	""").fetchone()
+	
+	if not result or result[0] is None:
+		# No matches have been processed yet, nothing to check
+		return
+	
+	existing_min_date, existing_max_date = result
+	
+	# Extract dates from the new matches to be processed
+	new_match_dates = []
+	for row in rows:
+		# start_date is the last element (index -1) in the row tuple
+		start_date = row[-1]
+		if start_date:
+			new_match_dates.append((start_date, row[1], row[2]))  # date, event_id, round_id
+	
+	if not new_match_dates:
+		return
+	
+	# Find matches that fall within the existing date range (out of sequence)
+	out_of_sequence = []
+	for date, event_id, round_id in new_match_dates:
+		if existing_min_date <= date <= existing_max_date:
+			out_of_sequence.append((date, event_id, round_id))
+	
+	if out_of_sequence:
+		# Group by date for clearer warning
+		from collections import defaultdict
+		by_date = defaultdict(list)
+		for date, event_id, round_id in out_of_sequence:
+			by_date[date].append((event_id, round_id))
+		
+		log.warning("=" * 80)
+		log.warning("OUT-OF-SEQUENCE MATCHES DETECTED!")
+		log.warning("Found %d newly parsed match(es) that fall within the date range of already-processed matches.", len(out_of_sequence))
+		log.warning("Existing match date range: %s to %s", existing_min_date, existing_max_date)
+		log.warning("")
+		log.warning("Out-of-sequence matches by date:")
+		for date in sorted(by_date.keys()):
+			events = set(event_id for event_id, _ in by_date[date])
+			log.warning("  %s: %d match(es) from %d event(s)", date, len(by_date[date]), len(events))
+			for event_id, round_id in sorted(by_date[date])[:5]:  # Show first 5
+				log.warning("    - Event: %s, Round: %s", event_id, round_id)
+			if len(by_date[date]) > 5:
+				log.warning("    ... and %d more", len(by_date[date]) - 5)
+		log.warning("")
+		log.warning("These matches may affect ELO ratings chronologically.")
+		log.warning("Consider running with --recalculate to recompute all ELO ratings from scratch.")
+		log.warning("=" * 80)
+
+
 def run(recalculate: bool = False) -> None:
 	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 	log = logging.getLogger(__name__)
@@ -644,6 +710,10 @@ def run(recalculate: bool = False) -> None:
 		log.info("No matches to process")
 		conn.close()
 		return
+	
+	# Check for out-of-sequence matches in incremental mode
+	if not recalculate:
+		check_for_out_of_sequence_matches(conn, rows, log)
 
 	# In-memory trackers
 	if recalculate:
