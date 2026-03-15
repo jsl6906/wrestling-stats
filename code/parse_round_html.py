@@ -138,56 +138,89 @@ def insert_match(conn: duckdb.DuckDBPyConnection, row: Dict[str, Any]) -> None:
     )
 
 
+def table_exists(conn: duckdb.DuckDBPyConnection, table_name: str) -> bool:
+    """Check if a table exists in the database."""
+    try:
+        result = conn.execute("""
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_name = ?
+        """, [table_name]).fetchone()
+        return result[0] > 0 if result else False
+    except Exception:
+        return False
+
+
 def delete_all_matches(conn: duckdb.DuckDBPyConnection) -> tuple[int, int, int]:
     """Delete all matches, wrestler_history, and wrestlers. Returns (matches_deleted, history_deleted, wrestlers_deleted)."""
     # Count before deleting
-    history_result = conn.execute("""--sql
-        SELECT COUNT(*) FROM wrestler_history
-    """).fetchone()
-    history_count = history_result[0] if history_result else 0
+    history_count = 0
+    if table_exists(conn, 'wrestler_history'):
+        history_result = conn.execute("""--sql
+            SELECT COUNT(*) FROM wrestler_history
+        """).fetchone()
+        history_count = history_result[0] if history_result else 0
     
-    matches_result = conn.execute("""--sql
-        SELECT COUNT(*) FROM matches
-    """).fetchone()
-    matches_count = matches_result[0] if matches_result else 0
+    matches_count = 0
+    if table_exists(conn, 'matches'):
+        matches_result = conn.execute("""--sql
+            SELECT COUNT(*) FROM matches
+        """).fetchone()
+        matches_count = matches_result[0] if matches_result else 0
     
-    wrestlers_result = conn.execute("""--sql
-        SELECT COUNT(*) FROM wrestlers
-    """).fetchone()
-    wrestlers_count = wrestlers_result[0] if wrestlers_result else 0
+    wrestlers_count = 0
+    if table_exists(conn, 'wrestlers'):
+        wrestlers_result = conn.execute("""--sql
+            SELECT COUNT(*) FROM wrestlers
+        """).fetchone()
+        wrestlers_count = wrestlers_result[0] if wrestlers_result else 0
     
-    # Delete all wrestler_history
-    conn.execute("""--sql
-        DELETE FROM wrestler_history
-    """)
+    # Delete all wrestler_history (if table exists)
+    if table_exists(conn, 'wrestler_history'):
+        conn.execute("""--sql
+            DELETE FROM wrestler_history
+        """)
     
-    # Delete all matches
-    conn.execute("""--sql
-        DELETE FROM matches
-    """)
+    # Delete all matches (if table exists)
+    if table_exists(conn, 'matches'):
+        conn.execute("""--sql
+            DELETE FROM matches
+        """)
     
-    # Delete all wrestlers
-    conn.execute("""--sql
-        DELETE FROM wrestlers
-    """)
+    # Delete all wrestlers (if table exists)
+    if table_exists(conn, 'wrestlers'):
+        conn.execute("""--sql
+            DELETE FROM wrestlers
+        """)
+    # Delete all matches (if table exists)
+    if table_exists(conn, 'matches'):
+        conn.execute("""--sql
+            DELETE FROM matches
+        """)
+    
+    # Delete all wrestlers (if table exists)
+    if table_exists(conn, 'wrestlers'):
+        conn.execute("""--sql
+            DELETE FROM wrestlers
+        """)
     
     return matches_count, history_count, wrestlers_count
 
 
 def delete_matches_for_round(conn: duckdb.DuckDBPyConnection, event_id: str, round_id: str) -> int:
     """Delete all existing matches and wrestler_history for a given round. Returns count of deleted matches."""
-    # First delete wrestler_history records that reference matches from this round
+    # First delete wrestler_history records that reference matches from this round (if table exists)
     # wrestler_history has match_rowid that references matches.rowid
-    conn.execute(
-        """--sql
-        DELETE FROM wrestler_history
-        WHERE match_rowid IN (
-            SELECT rowid FROM matches
-            WHERE event_id = ? AND round_id = ?
+    if table_exists(conn, 'wrestler_history'):
+        conn.execute(
+            """--sql
+            DELETE FROM wrestler_history
+            WHERE match_rowid IN (
+                SELECT rowid FROM matches
+                WHERE event_id = ? AND round_id = ?
+            )
+            """,
+            [event_id, round_id],
         )
-        """,
-        [event_id, round_id],
-    )
     
     # Then delete the matches themselves and count deleted rows
     deleted_rows = conn.execute(

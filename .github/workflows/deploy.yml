@@ -72,32 +72,42 @@ jobs:
           uv run code/parse_round_html.py
           uv run code/calculate_elo.py
 
-      # - name: Process NYSPHSAA data
-      #   env:
-      #     GOVERNING_BODY_ID: "38"
-      #     GOVERNING_BODY_ACRONYM: "NYSPHSAA"
-      #     GOVERNING_BODY_NAME: "New York State Public High School Athletic Association"
-      #   run: |
-      #     uv run code/scrape_tournaments.py --lookback-weeks 1
-      #     uv run code/parse_round_html.py
-      #     uv run code/calculate_elo.py
+      - name: Process NYSPHSAA data
+        env:
+          GOVERNING_BODY_ID: "38"
+          GOVERNING_BODY_ACRONYM: "NYSPHSAA"
+          GOVERNING_BODY_NAME: "New York State Public High School Athletic Association"
+        run: |
+          uv run code/scrape_tournaments.py --lookback-weeks 1
+          uv run code/parse_round_html.py
+          uv run code/calculate_elo.py
 
-      # - name: Process VHSL data
-      #   env:
-      #     GOVERNING_BODY_ID: "52"
-      #     GOVERNING_BODY_ACRONYM: "VHSL"
-      #     GOVERNING_BODY_NAME: "Virginia High School League"
-      #   run: |
-      #     uv run code/scrape_tournaments.py --lookback-weeks 1
-      #     uv run code/parse_round_html.py
-      #     uv run code/calculate_elo.py
+      - name: Process VHSL data
+        env:
+          GOVERNING_BODY_ID: "52"
+          GOVERNING_BODY_ACRONYM: "VHSL"
+          GOVERNING_BODY_NAME: "Virginia High School League"
+        run: |
+          uv run code/scrape_tournaments.py --lookback-weeks 1
+          uv run code/parse_round_html.py
+          uv run code/calculate_elo.py
+
+      - name: Process VA_USA data
+        env:
+          GOVERNING_BODY_ID: "253734046"
+          GOVERNING_BODY_ACRONYM: "VA_USA"
+          GOVERNING_BODY_NAME: "Virginia USA Wrestling"
+        run: |
+          uv run code/scrape_tournaments.py --lookback-weeks 1
+          uv run code/parse_round_html.py
+          uv run code/calculate_elo.py
 
       - name: Commit and push updated database files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add output/
-          git diff-index --quiet HEAD || git commit -m "Update database files [skip ci]"
+          git diff-index --quiet HEAD || git commit -m "Weekly parsing update of database files [skip ci]"
           git push
 
       - name: Activate venv, execute the data loaders and build the static Observable Framework site

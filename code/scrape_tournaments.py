@@ -1,4 +1,4 @@
-"""
+﻿"""
 Scrape TrackWrestling tournaments and save Round Results HTML per round.
 
 Design:
@@ -59,7 +59,78 @@ class Colors:
     """ANSI color codes for console output."""
     YELLOW = '\033[93m'
     RED = '\033[91m'
+    GREEN = '\033[92m'
+    CYAN = '\033[96m'
     RESET = '\033[0m'
+
+
+class TimingStats:
+    """Collect and report timing statistics for performance analysis."""
+    
+    def __init__(self):
+        self.timings: dict[str, list[float]] = {}
+        self.current_start: dict[str, float] = {}
+    
+    def start(self, name: str) -> None:
+        """Start timing an operation."""
+        self.current_start[name] = time.time()
+    
+    def stop(self, name: str) -> float:
+        """Stop timing and record the duration. Returns duration in seconds."""
+        if name not in self.current_start:
+            return 0.0
+        duration = time.time() - self.current_start.pop(name)
+        if name not in self.timings:
+            self.timings[name] = []
+        self.timings[name].append(duration)
+        return duration
+    
+    def report(self) -> None:
+        """Log timing summary."""
+        if not self.timings:
+            return
+        logger.info("==== Timing Report ====")
+        for name, durations in sorted(self.timings.items()):
+            total = sum(durations)
+            avg = total / len(durations) if durations else 0
+            logger.info(
+                f"{Colors.CYAN}[{name}]{Colors.RESET} calls={len(durations)}, "
+                f"total={total:.2f}s, avg={avg:.3f}s, max={max(durations):.3f}s"
+            )
+
+
+def smart_wait_for_content(page, timeout_ms: int = 3000) -> bool:
+    """
+    Wait for actual page content to be ready, not just network idle.
+    Returns True if content found, False if timeout.
+    
+    This replaces fixed time.sleep() calls with intelligent waiting.
+    """
+    try:
+        # Try to find any content indicator (round selector, data tables, etc.)
+        # Use a short poll interval to exit as soon as content appears
+        selectors = [
+            "select#roundIdBox",
+            "select#boutNumberBox", 
+            "table.tw-table",
+            "section.tw-list",
+            "div#pageContent",
+        ]
+        start = time.time()
+        timeout_sec = timeout_ms / 1000
+        
+        while (time.time() - start) < timeout_sec:
+            for frame in [page] + list(page.frames):
+                for selector in selectors:
+                    try:
+                        if frame.locator(selector).count() > 0:
+                            return True
+                    except Exception:
+                        continue
+            time.sleep(0.05)  # Small poll interval
+        return False
+    except Exception:
+        return False
 
 # ============================================================================
 # Constants
@@ -667,6 +738,7 @@ def run_scraper(args: argparse.Namespace) -> None:
     from playwright.sync_api import sync_playwright
 
     start_time = time.time()
+    timing = TimingStats()  # Performance tracking
 
     # 1. Discover tournaments via HTTP
     logger.info("=" * 80)
@@ -674,7 +746,9 @@ def run_scraper(args: argparse.Namespace) -> None:
     logger.info("  Date range: %s to %s", args.start_date, args.end_date)
     logger.info("=" * 80)
 
+    timing.start("http_discovery")
     discovered = discover_tournaments(args.start_date, args.end_date)
+    timing.stop("http_discovery")
     discovery_time = time.time() - start_time
     logger.info("Discovered %d tournaments in %.2fs", len(discovered), discovery_time)
 
@@ -772,12 +846,19 @@ def run_scraper(args: argparse.Namespace) -> None:
     overall_events = 0
     overall_succeeded = 0
     overall_skipped = 0
+    cookie_dismissed = False  # Track cookie state across tournaments
 
+    timing.start("browser_launch")
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=not args.show)
-        page = browser.new_page()
+        # Use a context with reduced default timeout for faster failures
+        context = browser.new_context()
+        context.set_default_timeout(10000)  # 10s instead of 30s default
+        page = context.new_page()
+        timing.stop("browser_launch")
 
         for t in eligible_events:
+            timing.start("tournament_total")
             overall_events += 1
             logger.info(
                 "[event %d/%d] Processing %s: %s (type=%d)",
@@ -786,44 +867,55 @@ def run_scraper(args: argparse.Namespace) -> None:
 
             try:
                 # Reset page state between tournaments to prevent navigation conflicts
+                timing.start("page_reset")
                 try:
                     page.goto("about:blank", wait_until="domcontentloaded", timeout=5000)
                 except Exception:
                     pass
+                timing.stop("page_reset")
 
                 # Build URLs for session establishment
                 verify_url, round_results_url = build_session_urls(t.event_id, t.event_type)
 
                 # Step 1: Establish session via VerifyPassword.jsp
+                # This is required per-tournament to set the tournament context
+                timing.start("session_establish")
                 logger.debug("Establishing session: %s", verify_url)
-                page.goto(verify_url, wait_until="load", timeout=20000)
-                # Wait for any redirects to settle (networkidle may timeout due to ads)
-                try:
-                    page.wait_for_load_state("networkidle", timeout=5000)
-                except Exception:
-                    pass
+                page.goto(verify_url, wait_until="domcontentloaded", timeout=20000)
+                # VerifyPassword.jsp sets cookies - no need to wait for content
+                timing.stop("session_establish")
 
-                # Dismiss cookie consent dialog if present
-                try:
-                    cookie_button = page.locator(
-                        "button:has-text('Accept'), "
-                        "button:has-text('Dismiss'), "
-                        "button.osano-cm-accept, "
-                        "button.osano-cm-dialog__close"
-                    )
-                    if cookie_button.count() > 0:
-                        cookie_button.first.click()
-                        time.sleep(0.5)
-                except Exception:
-                    pass  # Cookie dialog may not appear
+                # Dismiss cookie consent dialog if present (only check once per session)
+                if not cookie_dismissed:
+                    timing.start("cookie_check")
+                    try:
+                        # Try the most common cookie button classes with very short timeout
+                        for selector in [
+                            "button.osano-cm-accept",
+                            "button.osano-cm-dialog__close",
+                        ]:
+                            cookie_button = page.locator(selector)
+                            try:
+                                if cookie_button.is_visible(timeout=500):
+                                    cookie_button.first.click(timeout=1000)
+                                    time.sleep(0.2)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass  # Cookie dialog may not appear
+                    cookie_dismissed = True  # Mark as checked even if no dialog found
+                    timing.stop("cookie_check")
 
                 # Step 2: For team tournaments (type 3), skip RoundResults.jsp as it doesn't exist
                 # Go directly to dual meet handling
                 is_team_tournament = (t.event_type == 3)
                 round_selector_found = False
                 is_dual_meet = False
+                rounds_frame = None  # Will be cached if found during round selector check
 
                 if is_team_tournament:
+                    timing.start("team_tournament_nav")
                     logger.debug("Team tournament detected, skipping RoundResults.jsp")
                     # Navigate to MainFrame to access dual meet results
                     type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "teamtournaments")
@@ -833,35 +925,36 @@ def run_scraper(args: argparse.Namespace) -> None:
                         f"&tournamentId={t.event_id}"
                     )
                     try:
-                        page.goto(main_url, wait_until="load", timeout=15000)
-                        try:
-                            page.wait_for_load_state("networkidle", timeout=5000)
-                        except Exception:
-                            pass
+                        page.goto(main_url, wait_until="domcontentloaded", timeout=15000)
+                        # Use smart wait instead of networkidle
+                        smart_wait_for_content(page, timeout_ms=2000)
                     except Exception as e:
                         logger.debug("Failed to load main frame: %s", e)
                     is_dual_meet = True  # Assume dual meet format for team tournaments
+                    timing.stop("team_tournament_nav")
                 else:
                     # Step 2: Navigate to RoundResults (for non-team tournaments)
+                    timing.start("round_results_nav")
                     logger.debug("Loading round results: %s", round_results_url)
-                    page.goto(round_results_url, wait_until="load", timeout=15000)
-                    # Wait for any redirects to settle (networkidle may timeout due to ads)
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=5000)
-                    except Exception:
-                        pass
+                    page.goto(round_results_url, wait_until="domcontentloaded", timeout=15000)
+                    # Use smart wait instead of networkidle (faster exit when content ready)
+                    smart_wait_for_content(page, timeout_ms=2000)
+                    timing.stop("round_results_nav")
 
-                    # Check for round selector (standard tournaments)
+                    # Check for round selector (standard tournaments) and cache the frame
+                    rounds_frame = None
                     for fr in [page] + list(page.frames):
                         try:
                             if fr.locator("select#roundIdBox").count() > 0:
                                 round_selector_found = True
+                                rounds_frame = fr  # Cache frame for round scraping
                                 break
                         except Exception:
                             continue
 
                 # Try alternative tournament types if needed (only for non-team tournaments)
                 if not round_selector_found and not is_team_tournament:
+                    timing.start("alt_type_search")
                     logger.debug("Round selector not found, trying alternative types...")
                     for alt_type, alt_path in TOURNAMENT_TYPE_PATHS.items():
                         if alt_type == t.event_type:
@@ -879,30 +972,14 @@ def run_scraper(args: argparse.Namespace) -> None:
                         )
 
                         try:
-                            page.goto(alt_verify, wait_until="load", timeout=10000)
-                            try:
-                                page.wait_for_load_state("networkidle", timeout=3000)
-                            except Exception:
-                                pass  # networkidle may timeout due to ads
-                            page.goto(alt_results, wait_until="load", timeout=10000)
-                            try:
-                                page.wait_for_load_state("networkidle", timeout=3000)
-                            except Exception:
-                                pass  # networkidle may timeout due to ads
+                            page.goto(alt_verify, wait_until="domcontentloaded", timeout=10000)
+                            # Use smart wait instead of networkidle
+                            smart_wait_for_content(page, timeout_ms=1500)
+                            page.goto(alt_results, wait_until="domcontentloaded", timeout=10000)
+                            # Use smart wait instead of networkidle
+                            smart_wait_for_content(page, timeout_ms=1500)
 
-                            # Dismiss cookie consent dialog if present
-                            try:
-                                cookie_button = page.locator(
-                                    "button:has-text('Accept'), "
-                                    "button:has-text('Dismiss'), "
-                                    "button.osano-cm-accept, "
-                                    "button.osano-cm-dialog__close"
-                                )
-                                if cookie_button.count() > 0:
-                                    cookie_button.first.click()
-                                    time.sleep(0.3)
-                            except Exception:
-                                pass
+                            # Skip cookie check - already handled once per session
 
                             for fr in [page] + list(page.frames):
                                 try:
@@ -919,9 +996,11 @@ def run_scraper(args: argparse.Namespace) -> None:
                         except Exception as e:
                             logger.debug("Failed with %s: %s", alt_path, e)
                             continue
+                    timing.stop("alt_type_search")
 
                 # If still no round selector, try Dual Meet Results (for team tournaments)
                 if not round_selector_found:
+                    timing.start("dual_meet_fallback")
                     logger.debug("No round selector found, checking for dual meet format...")
                     
                     # Navigate to main frame to find dual meet navigation
@@ -932,11 +1011,9 @@ def run_scraper(args: argparse.Namespace) -> None:
                         f"&tournamentId={t.event_id}"
                     )
                     try:
-                        page.goto(main_url, wait_until="load", timeout=15000)
-                        try:
-                            page.wait_for_load_state("networkidle", timeout=5000)
-                        except Exception:
-                            pass  # networkidle may timeout due to ads
+                        page.goto(main_url, wait_until="domcontentloaded", timeout=15000)
+                        # Use smart wait instead of networkidle
+                        smart_wait_for_content(page, timeout_ms=2000)
                     except Exception as e:
                         logger.debug("Failed to load main frame: %s", e)
                     
@@ -947,7 +1024,8 @@ def run_scraper(args: argparse.Namespace) -> None:
                             results_link = fr.locator('a:has-text("Results")').first
                             if results_link.count() > 0:
                                 results_link.click(timeout=3000)
-                                time.sleep(0.2)
+                                # Use smart wait instead of fixed sleep
+                                smart_wait_for_content(page, timeout_ms=1000)
                         except Exception:
                             pass
                         
@@ -958,26 +1036,27 @@ def run_scraper(args: argparse.Namespace) -> None:
                                 if link.count() > 0 and link.is_visible():
                                     logger.debug("Clicking dual meet link: %s", link_text)
                                     link.click(timeout=5000)
-                                    try:
-                                        page.wait_for_load_state("networkidle", timeout=5000)
-                                    except Exception:
-                                        pass  # networkidle may timeout due to ads
+                                    # Use smart wait instead of networkidle
+                                    smart_wait_for_content(page, timeout_ms=2000)
                                     is_dual_meet = True
                                     break
                             except Exception:
                                 continue
                         if is_dual_meet:
                             break
+                    timing.stop("dual_meet_fallback")
 
                 if not round_selector_found and not is_dual_meet:
                     type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                     tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
                     logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | no round/bout selector found | {tournament_url}{Colors.RESET}")
                     overall_skipped += 1
+                    timing.stop("tournament_total")
                     continue
 
                 # Handle dual meet tournaments
                 if is_dual_meet:
+                    timing.start("dual_meet_scrape")
                     saved_count = 0
                     
                     # First, find all chart/bracket links (segment-track buttons)
@@ -1022,10 +1101,8 @@ def run_scraper(args: argparse.Namespace) -> None:
                                         link = fr.locator(f"ul.top-links li.top-link a[href*='chartId={chart_id}']").first
                                         if link.count() > 0:
                                             link.click(timeout=5000)
-                                            try:
-                                                page.wait_for_load_state("networkidle", timeout=3000)
-                                            except Exception:
-                                                pass
+                                            # Use smart wait instead of networkidle
+                                            smart_wait_for_content(page, timeout_ms=1500)
                                             chart_clicked = True
                                             break
                                 except Exception:
@@ -1062,13 +1139,10 @@ def run_scraper(args: argparse.Namespace) -> None:
                                     
                                     # Select the bout
                                     bout_frame.locator("select#boutNumberBox").select_option(value=bout_id)
-                                    try:
-                                        page.wait_for_load_state("networkidle", timeout=3000)
-                                    except Exception:
-                                        pass
+                                    # Use smart wait instead of networkidle
+                                    smart_wait_for_content(page, timeout_ms=1500)
                                     
-                                    # Wait for content frame to load
-                                    time.sleep(0.5)
+                                    # Wait for content frame to load (already done via smart_wait above)
                                     
                                     # Find frame with the actual data
                                     raw_html = None
@@ -1113,6 +1187,8 @@ def run_scraper(args: argparse.Namespace) -> None:
                             tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
                             logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | no bouts saved | {tournament_url}{Colors.RESET}")
                             overall_skipped += 1
+                        timing.stop("dual_meet_scrape")
+                        timing.stop("tournament_total")
                         continue
                     
                     # No chart links found, try direct bout access
@@ -1122,6 +1198,8 @@ def run_scraper(args: argparse.Namespace) -> None:
                         tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
                         logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | no bouts found in selector | {tournament_url}{Colors.RESET}")
                         overall_skipped += 1
+                        timing.stop("dual_meet_scrape")
+                        timing.stop("tournament_total")
                         continue
                     
                     logger.debug("Found %d bouts for dual meet %s", len(bouts), t.event_id)
@@ -1145,13 +1223,8 @@ def run_scraper(args: argparse.Namespace) -> None:
                             
                             # Select the bout
                             bout_frame.locator("select#boutNumberBox").select_option(value=bout_id)
-                            try:
-                                page.wait_for_load_state("networkidle", timeout=3000)
-                            except Exception:
-                                pass  # networkidle may timeout due to ads
-                            
-                            # Wait for content frame to load (DualMeetDetail.jsp or similar)
-                            time.sleep(0.5)  # Give frame time to populate
+                            # Use smart wait instead of networkidle + fixed sleep
+                            smart_wait_for_content(page, timeout_ms=1500)
                             
                             # Find frame with the actual data (table.tw-table or section.tw-list)
                             # Parser expects to find these elements in the HTML
@@ -1190,6 +1263,7 @@ def run_scraper(args: argparse.Namespace) -> None:
                             logger.debug("Error saving bout %s: %s", bout_id, e)
                             continue
                     
+                    timing.stop("dual_meet_scrape")
                     if saved_count > 0:
                         overall_succeeded += 1
                         logger.info(
@@ -1201,63 +1275,59 @@ def run_scraper(args: argparse.Namespace) -> None:
                         type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                         tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
                         logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | {t.name} | no bouts saved | {tournament_url}{Colors.RESET}")
+                    timing.stop("tournament_total")
                     continue  # Move to next tournament
 
                 # Parse rounds from selector (standard tournament flow)
+                timing.start("round_scrape")
+                timing.start("parse_rounds")
                 rounds = parse_rounds(page)
+                timing.stop("parse_rounds")
                 if not rounds:
                     type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                     tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
                     logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | no rounds found | {tournament_url}{Colors.RESET}")
                     overall_skipped += 1
+                    timing.stop("round_scrape")
+                    timing.stop("tournament_total")
                     continue
 
                 # Scrape each round
+                # rounds_frame may already be cached from round selector check above
                 saved_count = 0
+                
                 for rid, label in rounds:
                     # Skip "All Rounds" aggregate
                     if (label or "").strip().lower() == "all rounds" or rid in (None, "", "0"):
                         continue
 
                     try:
-                        # Re-navigate for each round to maintain page state
-                        page.goto(round_results_url, wait_until="load", timeout=15000)
-                        try:
-                            page.wait_for_load_state("networkidle", timeout=3000)
-                        except Exception:
-                            # networkidle can timeout due to ads, but page is usually loaded
-                            pass
-
-                        # Dismiss cookie consent dialog if present
-                        try:
-                            cookie_button = page.locator(
-                                "button:has-text('Accept'), "
-                                "button:has-text('Dismiss'), "
-                                "button.osano-cm-accept, "
-                                "button.osano-cm-dialog__close"
-                            )
-                            if cookie_button.count() > 0:
-                                cookie_button.first.click()
-                                time.sleep(0.3)
-                        except Exception:
-                            pass
-
-                        # Find round selector frame
-                        rounds_frame = None
-                        for fr in [page] + list(page.frames):
-                            try:
-                                if fr.locator("select#roundIdBox").count() > 0:
-                                    rounds_frame = fr
-                                    break
-                            except Exception:
-                                continue
+                        # Find round selector frame if not already cached
+                        if rounds_frame is None:
+                            for fr in [page] + list(page.frames):
+                                try:
+                                    if fr.locator("select#roundIdBox").count() > 0:
+                                        rounds_frame = fr
+                                        break
+                                except Exception:
+                                    continue
 
                         if not rounds_frame:
-                            continue
+                            # Re-navigate and try again
+                            page.goto(round_results_url, wait_until="domcontentloaded", timeout=15000)
+                            smart_wait_for_content(page, timeout_ms=1500)
+                            for fr in [page] + list(page.frames):
+                                try:
+                                    if fr.locator("select#roundIdBox").count() > 0:
+                                        rounds_frame = fr
+                                        break
+                                except Exception:
+                                    continue
+                            if not rounds_frame:
+                                continue
 
                         # Select round and click Go
                         rounds_frame.locator("select#roundIdBox").select_option(value=rid)
-                        time.sleep(0.1)
 
                         go_btn = rounds_frame.locator(
                             'input[type="button"][value="Go"][onclick*="viewSchedule"], '
@@ -1265,18 +1335,19 @@ def run_scraper(args: argparse.Namespace) -> None:
                         ).first
                         if go_btn.count() > 0:
                             go_btn.click()
+                            # Content updates quickly after clicking - use shorter timeout
+                            # Wait for DOM to settle (networkidle causes 30s timeout on ad-heavy pages)
                             try:
-                                page.wait_for_load_state("networkidle", timeout=2000)
+                                page.wait_for_load_state("domcontentloaded", timeout=2000)
                             except Exception:
-                                # networkidle can timeout due to ads, but page is usually loaded
-                                pass
+                                pass  # Content may already be loaded
+                            # Quick check for content (should be immediate)
+                            smart_wait_for_content(page, timeout_ms=500)
 
                         # Find frame with the actual data (section.tw-list)
-                        # Parser expects to find this element in the HTML
                         raw_html = None
                         for fr in page.frames:
                             try:
-                                # Check if this frame has the data elements
                                 if (fr.locator("section.tw-list").count() > 0 or
                                     fr.locator("table.tw-table").count() > 0):
                                     raw_html = fr.content()
@@ -1306,8 +1377,11 @@ def run_scraper(args: argparse.Namespace) -> None:
 
                     except Exception as e:
                         logger.debug("Error saving round %s: %s", rid, e)
+                        # Reset frame reference on error to force re-navigation
+                        rounds_frame = None
                         continue
 
+                timing.stop("round_scrape")
                 if saved_count > 0:
                     overall_succeeded += 1
                     logger.info(
@@ -1319,9 +1393,11 @@ def run_scraper(args: argparse.Namespace) -> None:
                     type_path = TOURNAMENT_TYPE_PATHS.get(t.event_type, "opentournaments")
                     tournament_url = f"{BASE_URL}/{type_path}/MainFrame.jsp?TIM={_get_timestamp()}&twSessionId={GENERIC_SESSION_ID}&tournamentId={t.event_id}"
                     logger.warning(f"{Colors.YELLOW}[event] {t.event_id} | {t.name} | no rounds saved | {tournament_url}{Colors.RESET}")
+                timing.stop("tournament_total")
 
             except Exception as e:
                 overall_skipped += 1
+                timing.stop("tournament_total")
                 logger.error(f"{Colors.RED}[event] {t.event_id} | {t.name} | error: {e}{Colors.RESET}")
 
         browser.close()
@@ -1335,6 +1411,9 @@ def run_scraper(args: argparse.Namespace) -> None:
         elapsed, overall_events, overall_succeeded, overall_skipped
     )
     logger.info("=" * 80)
+    
+    # Print timing breakdown for performance analysis
+    timing.report()
 
 
 # ============================================================================
@@ -1429,4 +1508,5 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

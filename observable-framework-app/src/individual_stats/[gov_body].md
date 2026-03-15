@@ -134,7 +134,7 @@ function parseDate(v) {
     day: 'numeric' 
   });
   
-  return wrap(`<p style="font-size: 0.9em; font-style: italic; margin: 0 0 20px 0;">Data coverage: ${formatDate(dateRange.min)} to ${formatDate(dateRange.max)} • ${dateRange.count.toLocaleString()} total matches</p>`);
+  return wrap(`<p style="font-size: 0.9em; font-style: italic; margin: 0 0 20px 0;">Data coverage: ${formatDate(dateRange.min)} to ${formatDate(dateRange.max)}</p>`);
 })()
 ```
 
@@ -407,7 +407,6 @@ const activeWrestler = (() => {
   
   return wrap(`
     <div>
-    <p style="font-size: 0.85em; color: #666; margin-bottom: 10px;">Debug: ${allRowsFor.length} total matches, ${rowsFor.length} non-bye matches, ${totalWins} wins, ${totalLosses} losses</p>
     <table>
       <thead>
         <tr>
@@ -534,7 +533,6 @@ const activeWrestler = (() => {
   
   return wrap(`
     <div>
-    <p style="font-size: 0.85em; color: #666; margin-bottom: 10px;">Debug: ${allRowsFor.length} total matches, ${rowsFor.length} non-bye matches, ${totalWins} wins, ${totalLosses} losses</p>
     <table>
       <thead>
         <tr>
@@ -1247,5 +1245,87 @@ const selectedEnd = seriesByDate.length ? seriesByDate[seriesByDate.length - 1] 
 ## What is Elo rating?
 
 The Elo rating system is a method for calculating the relative skill levels of players in competitive games, famously used in chess. It assigns a numerical rating that is updated after every match based on the outcome and the difference in the players' ratings. If a higher-rated player wins as expected, they gain only a few points, but if a lower-rated player wins an upset, they earn a significant rating boost. The system is self-correcting over time, rewarding better-than-expected performance with rating increases and penalizing underperformance with decreases, providing an objective measure of a player's relative strength.
+
+## Download Match Data
+
+```js
+// Download button for individual match data
+(() => {
+  const btn = document.createElement("button");
+
+  if (!activeWrestler) {
+    btn.textContent = "📥 Download Match History";
+    btn.disabled = true;
+    btn.style.cssText = "padding: 8px 16px; cursor: not-allowed; opacity: 0.5;";
+    return btn;
+  }
+
+  btn.textContent = "📥 Download Match History";
+  btn.style.cssText = "padding: 8px 16px; cursor: pointer;";
+
+  btn.addEventListener("click", async () => {
+    const XLSX = await import("npm:xlsx");
+
+    // Format fall_seconds as M:SS, or blank if not applicable
+    const formatMatchTime = (seconds) => {
+      const s = toNum(seconds);
+      if (s == null || !Number.isFinite(s) || s <= 0) return '';
+      const m = Math.floor(s / 60);
+      const sec = Math.round(s % 60);
+      return `${m}:${String(sec).padStart(2, '0')}`;
+    };
+
+    const matches = elo_history
+      .filter(d => d.name === activeWrestler && d.bye !== true)
+      .map(d => {
+        const matchDate = parseDate(d.start_date_iso ?? d.start_date);
+        const isWin = d.role === 'W' || d.role === 'winner';
+        const eloChange = toNum(d.post_elo) - toNum(d.pre_elo);
+        const margin = toNum(d.margin);
+        const score = margin != null && Number.isFinite(margin)
+          ? (isWin ? `+${margin}` : `-${margin}`)
+          : '';
+        return {
+          'Date': matchDate ? matchDate.toLocaleDateString('en-US') : '',
+          'Tournament': d.tournament_name ?? d.event_id ?? '',
+          'Round': d.round_label ?? d.round_detail ?? '',
+          'Team': d.team ?? '',
+          'Opponent': d.opponent_name ?? '',
+          'Opponent Team': d.opponent_team ?? '',
+          'Result': isWin ? 'Win' : 'Loss',
+          'Decision Type': d.decision_type ?? '',
+          'Score': score,
+          'Match Time': formatMatchTime(d.fall_seconds),
+          'Pre Elo': toNum(d.pre_elo) != null ? Math.round(toNum(d.pre_elo)) : '',
+          'Post Elo': toNum(d.post_elo) != null ? Math.round(toNum(d.post_elo)) : '',
+          'Elo Change': eloChange != null ? Math.round(eloChange) : '',
+          'Opponent Pre Elo': toNum(d.opponent_pre_elo) != null ? Math.round(toNum(d.opponent_pre_elo)) : '',
+          'Opponent Post Elo': toNum(d.opponent_post_elo) != null ? Math.round(toNum(d.opponent_post_elo)) : ''
+        };
+      })
+      .sort((a, b) => new Date(a.Date) - new Date(b.Date));
+
+    if (matches.length === 0) {
+      alert('No match data available for this wrestler.');
+      return;
+    }
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(matches);
+    ws['!cols'] = [
+      { wch: 12 }, { wch: 40 }, { wch: 20 }, { wch: 25 }, { wch: 25 },
+      { wch: 25 }, { wch: 10 }, { wch: 15 }, { wch: 10 }, { wch: 12 },
+      { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 15 }
+    ];
+    XLSX.utils.book_append_sheet(wb, ws, "Matches");
+
+    const today = new Date().toISOString().split('T')[0];
+    const safeName = activeWrestler.replace(/[^a-zA-Z0-9]/g, '_');
+    XLSX.writeFile(wb, `${safeName}_matches_${today}.xlsx`);
+  });
+
+  return btn;
+})()
+```
 
 
