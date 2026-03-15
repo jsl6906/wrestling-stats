@@ -8,7 +8,7 @@
     "deploy": "npm run deploy --prefix observable-framework-app",
     "clean": "npm run clean --prefix observable-framework-app",
     "scrape": "uv run code/scrape_tournaments.py --lookback-weeks 2",
-    "scrape_back": "uv run code/scrape_tournaments.py --start-date 09/01/2023",
+    "scrape_back": "uv run code/scrape_tournaments.py --start-date 09/01/2020",
     "parse": "uv run code/parse_round_html.py",
     "calculate": "uv run code/calculate_elo.py",
     "update": "npm run scrape && npm run parse && npm run calculate",

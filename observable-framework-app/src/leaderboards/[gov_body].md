@@ -64,15 +64,50 @@ import {FileAttachment, view} from "observablehq:stdlib";
 ```
 
 ```js
+// URL parameter utilities
+function getUrlParam(name) {
+  const url = new URL(window.location);
+  return url.searchParams.get(name);
+}
+
+function setUrlParam(name, value) {
+  const url = new URL(window.location);
+  if (value) {
+    url.searchParams.set(name, value);
+  } else {
+    url.searchParams.delete(name);
+  }
+  window.history.replaceState({}, '', url);
+}
+
+const initialSeasonFromUrl = getUrlParam('season');
+const initialTeamFromUrl = getUrlParam('team');
+```
+
+```js
 // Get unique seasons for filtering
 const seasons = ["All Seasons", ...Array.from(new Set(individuals.map(d => d.season))).sort().reverse()];
-const selectedSeason = view(select(seasons, {label: "Season", value: seasons[0]}));
+const selectedSeason = (() => {
+  const initial = (initialSeasonFromUrl && seasons.includes(initialSeasonFromUrl)) ? initialSeasonFromUrl : seasons[0];
+  const control = select(seasons, {label: "Season", value: initial});
+  control.addEventListener("input", () => {
+    setUrlParam('season', control.value === seasons[0] ? null : control.value);
+  });
+  return view(control);
+})();
 ```
 
 ```js
 // Get unique teams for filtering
 const teamOptions = ["All Teams", ...Array.from(new Set(individuals.map(d => d.team).filter(Boolean))).sort()];
-const selectedTeam = view(select(teamOptions, {label: "Team", value: teamOptions[0]}));
+const selectedTeam = (() => {
+  const initial = (initialTeamFromUrl && teamOptions.includes(initialTeamFromUrl)) ? initialTeamFromUrl : teamOptions[0];
+  const control = select(teamOptions, {label: "Team", value: initial});
+  control.addEventListener("input", () => {
+    setUrlParam('team', control.value === teamOptions[0] ? null : control.value);
+  });
+  return view(control);
+})();
 ```
 
 ```js
