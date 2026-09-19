@@ -2,12 +2,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-// Read database files and extract suffixes (done at config time)
-const outputDir = path.join(process.cwd(), "..", "output");
-const files = fs.readdirSync(outputDir);
-const suffixes = files
-  .filter(file => file.startsWith("trackwrestling_") && file.endsWith(".db"))
-  .map(file => file.replace("trackwrestling_", "").replace(".db", ""));
+// Governing bodies are the single source of truth for routes (shared with the Python pipeline and CI)
+const govBodies = JSON.parse(fs.readFileSync(path.join(process.cwd(), "..", "governing_bodies.json"), "utf8"));
+const suffixes = govBodies.map((gb) => gb.acronym.toLowerCase());
 
 export default {
   // The app’s title; used in the sidebar and webpage titles.
@@ -51,16 +48,6 @@ export default {
   // preserveIndex: false, // drop /index from URLs
 
   async *dynamicPaths() {
-    // Read database files from output directory
-    const outputDir = path.join(process.cwd(), "..", "output");
-    const files = fs.readdirSync(outputDir);
-    
-    // Filter for .db files and extract the suffix (e.g., "nvwf" from "trackwrestling_nvwf.db")
-    const suffixes = files
-      .filter(file => file.startsWith("trackwrestling_") && file.endsWith(".db"))
-      .map(file => file.replace("trackwrestling_", "").replace(".db", ""));
-    
-    // Yield a path for each suffix
     for (const suffix of suffixes) {
       yield `/individual_stats/${suffix}`;
       yield `/leaderboards/${suffix}`;

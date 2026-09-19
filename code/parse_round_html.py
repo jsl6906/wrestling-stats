@@ -23,113 +23,59 @@ from typing import List, Optional, Dict, Any, Tuple
 import re
 
 from bs4 import BeautifulSoup, Tag
-import duckdb
+import psycopg
 from tqdm import tqdm
 
 try:
-    from .config import get_db_path
+    from .config import GOV_BODY
+    from .db import get_pg_connection, ensure_schema as _ensure_schema
 except ImportError:
-    from config import get_db_path
+    from config import GOV_BODY
+    from db import get_pg_connection, ensure_schema as _ensure_schema
 
 
-def ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
-    # Ensure matches table exists with structured fields; add missing columns if table already exists
-    conn.execute(
-        """--sql
-        CREATE TABLE IF NOT EXISTS matches (
-            event_id TEXT,
-            round_id TEXT,
-            weight_class TEXT,
-            raw_match_results TEXT,
-            round_detail TEXT,
-            winner_name TEXT,
-            winner_team TEXT,
-            decision_type TEXT,
-            loser_name TEXT,
-            loser_team TEXT,
-            decision_type_code TEXT,
-            winner_points INTEGER,
-            loser_points INTEGER,
-            fall_time TEXT,
-            bye BOOLEAN,
-            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-
-    # Backfill: add any missing columns for older databases
-    cols = set(
-        r[0]
-        for r in conn.execute(
-            """--sql
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'matches'
-            """
-        ).fetchall()
-    )
-    expected: list[tuple[str, str]] = [
-        ("event_id", "TEXT"),
-        ("round_id", "TEXT"),
-        ("weight_class", "TEXT"),
-        ("raw_match_results", "TEXT"),
-        ("round_detail", "TEXT"),
-        ("winner_name", "TEXT"),
-        ("winner_team", "TEXT"),
-        ("decision_type", "TEXT"),
-        ("loser_name", "TEXT"),
-        ("loser_team", "TEXT"),
-        ("decision_type_code", "TEXT"),
-        ("winner_points", "INTEGER"),
-        ("loser_points", "INTEGER"),
-        ("fall_time", "TEXT"),
-        ("bye", "BOOLEAN"),
-        ("first_seen", "TIMESTAMP"),
-    ]
-    for name, typ in expected:
-        if name not in cols:
-            conn.execute(f"""--sql
-            ALTER TABLE matches ADD COLUMN {name} {typ}
-            """)
-
-    # tournament_rounds is created with full schema by the scraper shared module
+def ensure_schema(conn: psycopg.Connection) -> None:
+    _ensure_schema(conn)
 
 
-def fetch_unparsed_round_html(conn: duckdb.DuckDBPyConnection, reparse: bool = False) -> List[tuple]:
+def fetch_unparsed_round_html(conn: psycopg.Connection, reparse: bool = False) -> List[tuple]:
     """Fetch round HTML to parse. If reparse=True, includes already-parsed rounds."""
     if reparse:
         rows = conn.execute(
             """--sql
             SELECT event_id, round_id, label, raw_html
             FROM tournament_rounds
-            WHERE raw_html IS NOT NULL
+            WHERE gov_body = %s AND raw_html IS NOT NULL
             ORDER BY event_id, round_id
-            """
+            """,
+            [GOV_BODY],
         ).fetchall()
     else:
         rows = conn.execute(
             """--sql
             SELECT event_id, round_id, label, raw_html
             FROM tournament_rounds
-            WHERE raw_html IS NOT NULL AND COALESCE(parsed_ok, FALSE) = FALSE
+            WHERE gov_body = %s AND raw_html IS NOT NULL AND COALESCE(parsed_ok, FALSE) = FALSE
             ORDER BY event_id, round_id
-            """
+            """,
+            [GOV_BODY],
         ).fetchall()
     return rows
 
 
-def insert_match(conn: duckdb.DuckDBPyConnection, row: Dict[str, Any]) -> None:
+def insert_match(conn: psycopg.Connection, row: Dict[str, Any]) -> None:
     """Insert one parsed match row into matches."""
     conn.execute(
         """--sql
         INSERT INTO matches (
-            event_id, round_id, weight_class, raw_match_results,
+            gov_body, event_id, round_id, weight_class, raw_match_results,
             round_detail, winner_name, winner_team, decision_type,
             loser_name, loser_team, decision_type_code,
             winner_points, loser_points, fall_time, bye
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         [
+            GOV_BODY,
             row.get("event_id"), row.get("round_id"), row.get("weight_class"), row.get("raw_match_results"),
             row.get("round_detail"), row.get("winner_name"), row.get("winner_team"), row.get("decision_type"),
             row.get("loser_name"), row.get("loser_team"), row.get("decision_type_code"),
@@ -138,110 +84,50 @@ def insert_match(conn: duckdb.DuckDBPyConnection, row: Dict[str, Any]) -> None:
     )
 
 
-def table_exists(conn: duckdb.DuckDBPyConnection, table_name: str) -> bool:
-    """Check if a table exists in the database."""
-    try:
-        result = conn.execute("""
-            SELECT COUNT(*) FROM information_schema.tables
-            WHERE table_name = ?
-        """, [table_name]).fetchone()
-        return result[0] > 0 if result else False
-    except Exception:
-        return False
-
-
-def delete_all_matches(conn: duckdb.DuckDBPyConnection) -> tuple[int, int, int]:
-    """Delete all matches, wrestler_history, and wrestlers. Returns (matches_deleted, history_deleted, wrestlers_deleted)."""
-    # Count before deleting
-    history_count = 0
-    if table_exists(conn, 'wrestler_history'):
-        history_result = conn.execute("""--sql
-            SELECT COUNT(*) FROM wrestler_history
-        """).fetchone()
-        history_count = history_result[0] if history_result else 0
-    
-    matches_count = 0
-    if table_exists(conn, 'matches'):
-        matches_result = conn.execute("""--sql
-            SELECT COUNT(*) FROM matches
-        """).fetchone()
-        matches_count = matches_result[0] if matches_result else 0
-    
-    wrestlers_count = 0
-    if table_exists(conn, 'wrestlers'):
-        wrestlers_result = conn.execute("""--sql
-            SELECT COUNT(*) FROM wrestlers
-        """).fetchone()
-        wrestlers_count = wrestlers_result[0] if wrestlers_result else 0
-    
-    # Delete all wrestler_history (if table exists)
-    if table_exists(conn, 'wrestler_history'):
-        conn.execute("""--sql
-            DELETE FROM wrestler_history
-        """)
-    
-    # Delete all matches (if table exists)
-    if table_exists(conn, 'matches'):
-        conn.execute("""--sql
-            DELETE FROM matches
-        """)
-    
-    # Delete all wrestlers (if table exists)
-    if table_exists(conn, 'wrestlers'):
-        conn.execute("""--sql
-            DELETE FROM wrestlers
-        """)
-    # Delete all matches (if table exists)
-    if table_exists(conn, 'matches'):
-        conn.execute("""--sql
-            DELETE FROM matches
-        """)
-    
-    # Delete all wrestlers (if table exists)
-    if table_exists(conn, 'wrestlers'):
-        conn.execute("""--sql
-            DELETE FROM wrestlers
-        """)
-    
+def delete_all_matches(conn: psycopg.Connection) -> tuple[int, int, int]:
+    """Delete all matches, wrestler_history, and wrestlers for this governing body.
+    Returns (matches_deleted, history_deleted, wrestlers_deleted)."""
+    history_count = conn.execute(
+        """--sql
+        SELECT COUNT(*) FROM wrestler_history WHERE gov_body = %s
+        """,
+        [GOV_BODY],
+    ).fetchone()[0]
+    # wrestler_history rows cascade from matches
+    matches_count = conn.execute(
+        """--sql
+        DELETE FROM matches WHERE gov_body = %s
+        """,
+        [GOV_BODY],
+    ).rowcount
+    wrestlers_count = conn.execute(
+        """--sql
+        DELETE FROM wrestlers WHERE gov_body = %s
+        """,
+        [GOV_BODY],
+    ).rowcount
     return matches_count, history_count, wrestlers_count
 
 
-def delete_matches_for_round(conn: duckdb.DuckDBPyConnection, event_id: str, round_id: str) -> int:
-    """Delete all existing matches and wrestler_history for a given round. Returns count of deleted matches."""
-    # First delete wrestler_history records that reference matches from this round (if table exists)
-    # wrestler_history has match_rowid that references matches.rowid
-    if table_exists(conn, 'wrestler_history'):
-        conn.execute(
-            """--sql
-            DELETE FROM wrestler_history
-            WHERE match_rowid IN (
-                SELECT rowid FROM matches
-                WHERE event_id = ? AND round_id = ?
-            )
-            """,
-            [event_id, round_id],
-        )
-    
-    # Then delete the matches themselves and count deleted rows
-    deleted_rows = conn.execute(
+def delete_matches_for_round(conn: psycopg.Connection, event_id: str, round_id: str) -> int:
+    """Delete all existing matches (and cascaded wrestler_history) for a given round. Returns count of deleted matches."""
+    return conn.execute(
         """--sql
         DELETE FROM matches
-        WHERE event_id = ? AND round_id = ?
+        WHERE gov_body = %s AND event_id = %s AND round_id = %s
         """,
-        [event_id, round_id],
-    ).fetchall()
-    # DuckDB DELETE returns the number of rows deleted
-    return len(deleted_rows) if deleted_rows else 0
+        [GOV_BODY, event_id, round_id],
+    ).rowcount
 
 
-def mark_parsed_ok(conn: duckdb.DuckDBPyConnection, event_id: str, round_id: str) -> None:
+def mark_parsed_ok(conn: psycopg.Connection, event_id: str, round_id: str) -> None:
     conn.execute(
         """--sql
         UPDATE tournament_rounds
         SET parsed_ok = TRUE
-        WHERE event_id = ? AND round_id = ?
+        WHERE gov_body = %s AND event_id = %s AND round_id = %s
         """,
-        [event_id, round_id],
+        [GOV_BODY, event_id, round_id],
     )
 
 
@@ -1396,8 +1282,10 @@ def run(reparse: bool = False) -> None:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logger.addHandler(handler)
 
-    conn = duckdb.connect(str(get_db_path()))
+    # Explicit transactions: run() commits per round and rolls back on failure
+    conn = get_pg_connection(autocommit=False)
     ensure_schema(conn)
+    conn.commit()
 
     rows = fetch_unparsed_round_html(conn, reparse=reparse)
     if not rows:

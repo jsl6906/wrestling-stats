@@ -1,67 +1,44 @@
 """
-Simple DuckDB UI Launcher
-Connects to the local database and launches the DuckDB web UI
-Requires DuckDB to be installed, and internet access for the web UI.
+DuckDB UI Launcher
+Attaches the Postgres `trackwrestling` schema (Entra ID auth) as `pg` and launches the DuckDB web UI.
+Requires `az login` and internet access for the web UI.
+
+Run with uv:
+    uv run db/start_duckb_ui.py              # read-only
+    uv run db/start_duckb_ui.py --write      # allow writes
 """
 
-import duckdb
+from __future__ import annotations
+
+import argparse
+import sys
 from pathlib import Path
 
-def main():
-    # Find all .db files from output/ directory
-    output_dir = Path("output")
-    
-    if not output_dir.exists() or not output_dir.is_dir():
-        print("output/ directory not found.")
-        return
-    
-    db_files = list(output_dir.glob("*.db"))
-    
-    if not db_files:
-        print("No .db files found in output/ directory.")
-        return
-    
-    # Use the first .db file as the main connection
-    main_db = db_files[0]
-    print(f"Connecting to database: {main_db}")
-    
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "code"))
+
+from config import PGDATABASE, PGHOST, PG_SCHEMA  # noqa: E402
+from db import duckdb_attach_postgres  # noqa: E402
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Launch the DuckDB web UI attached to Postgres")
+    ap.add_argument("--write", action="store_true", help="Attach read-write instead of read-only")
+    args = ap.parse_args()
+
+    print(f"Attaching {PGHOST}/{PGDATABASE} schema {PG_SCHEMA} as 'pg' ({'read-write' if args.write else 'read-only'})")
     try:
-        # Connect to DuckDB
-        conn = duckdb.connect(str(main_db))
-        
-        # Attach all other .db files from output/ directory
-        other_db_files = [f for f in db_files if f != main_db]
-        if other_db_files:
-            print(f"\nAttaching {len(other_db_files)} additional database file(s):")
-            for db_file in other_db_files:
-                # Use the file name (without extension) as the database alias
-                db_name = db_file.stem
-                db_file_path = str(db_file)
-                try:
-                    conn.execute(f"ATTACH '{db_file_path}' AS {db_name};")
-                    print(f"  ✓ Attached: {db_file.name} as '{db_name}'")
-                except Exception as e:
-                    print(f"  ✗ Failed to attach {db_file.name}: {e}")
-        else:
-            print("\nNo additional .db files found in output/ directory.")
-                
-        print("\n🚀 Starting DuckDB UI...")
-        print("The web interface will open in your browser.")
-        print("\nPress Enter to stop the UI and exit...")
-        
-        # Start the DuckDB web UI
+        conn = duckdb_attach_postgres(read_only=not args.write)
+        print("Query tables as pg.<table>, e.g. SELECT gov_body, COUNT(*) FROM pg.matches GROUP BY 1;")
+        print("\nStarting DuckDB UI... The web interface will open in your browser.")
+        print("Press Enter to stop the UI and exit...")
         conn.execute("CALL start_ui();")
-        
-        # Wait for user input
         input()
-        
-        # Close connection
         conn.close()
-        print("Database connection closed.")
-        
+        print("Connection closed.")
     except Exception as e:
         print(f"Error: {e}")
-        print("Make sure DuckDB is installed: uv add duckdb")
+        print("Make sure you are logged in with `az login` and your IP is allowed by the server firewall.")
+
 
 if __name__ == "__main__":
     main()

@@ -4,12 +4,13 @@ Scrape TrackWrestling tournaments and save Round Results HTML per round.
 Design:
 - Use fast HTTP-based discovery to get tournament list (no browser needed)
 - For each tournament: use VerifyPassword.jsp to establish session, navigate to Round Results
-- Iterate rounds (excluding All Rounds), click Go, save parsed data to DuckDB
+- Iterate rounds (excluding All Rounds), click Go, save parsed data to Postgres
 
 Configuration (via .env):
 - GOVERNING_BODY_ID: TrackWrestling gbId parameter (e.g., 38 for VHSL)
-- GOVERNING_BODY_ACRONYM: Used in database filename (e.g., trackwrestling_vhsl.db)
+- GOVERNING_BODY_ACRONYM: Lowercased as the gov_body key in every table (e.g., vhsl)
 - GOVERNING_BODY_NAME: Full display name
+- PGHOST / PGDATABASE / PGUSER: Azure PostgreSQL connection (Entra ID auth)
 
 Notes:
 - Tournament discovery uses direct HTTP requests (~200ms for full listing)
@@ -35,18 +36,20 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import List, Optional, Tuple
 
-import duckdb
+import psycopg
 import httpx
 from bs4 import BeautifulSoup
 
 # Import from package modules
 try:
-    from .shared_trackwrestling import ensure_rounds_table, parse_rounds
-    from .config import get_db_path, GOVERNING_BODY_ACRONYM, GOVERNING_BODY_ID
+    from .shared_trackwrestling import parse_rounds
+    from .config import GOV_BODY, GOVERNING_BODY_ACRONYM, GOVERNING_BODY_ID
+    from .db import get_pg_connection, ensure_schema, upsert_governing_body
 except ImportError:
     # Fallback for direct script execution
-    from shared_trackwrestling import ensure_rounds_table, parse_rounds
-    from config import get_db_path, GOVERNING_BODY_ACRONYM, GOVERNING_BODY_ID
+    from shared_trackwrestling import parse_rounds
+    from config import GOV_BODY, GOVERNING_BODY_ACRONYM, GOVERNING_BODY_ID
+    from db import get_pg_connection, ensure_schema, upsert_governing_body
 
 
 logger = logging.getLogger(__name__)
@@ -215,54 +218,17 @@ class Tournament:
 
 
 # ============================================================================
-# DuckDB Helpers
+# Database Helpers
 # ============================================================================
 
-def ensure_db(conn: duckdb.DuckDBPyConnection) -> None:
-    """Ensure the tournaments table exists."""
-    conn.execute(
-        """--sql
-        CREATE TABLE IF NOT EXISTS tournaments (
-            event_id TEXT PRIMARY KEY,
-            name TEXT,
-            year INTEGER,
-            start_date DATE,
-            end_date DATE,
-            address TEXT,
-            venue TEXT,
-            street TEXT,
-            city TEXT,
-            state TEXT,
-            postal_code TEXT,
-            event_type_id INTEGER,
-            event_type_name TEXT,
-            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    # Backfill: add event_type columns if missing (for existing databases)
-    cols = set(
-        r[0]
-        for r in conn.execute(
-            """--sql
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'tournaments'
-            """
-        ).fetchall()
-    )
-    if "event_type_id" not in cols:
-        conn.execute("""--sql
-        ALTER TABLE tournaments ADD COLUMN event_type_id INTEGER
-        """)
-    if "event_type_name" not in cols:
-        conn.execute("""--sql
-        ALTER TABLE tournaments ADD COLUMN event_type_name TEXT
-        """)
+def ensure_db(conn: psycopg.Connection) -> None:
+    """Ensure schema is current and this governing body is registered."""
+    ensure_schema(conn)
+    upsert_governing_body(conn)
 
 
 def upsert_tournament(
-    conn: duckdb.DuckDBPyConnection,
+    conn: psycopg.Connection,
     *,
     event_id: str,
     name: Optional[str] = None,
@@ -278,9 +244,9 @@ def upsert_tournament(
     """Insert or update a tournament record."""
     conn.execute(
         """--sql
-        INSERT INTO tournaments (event_id, name, year, start_date, end_date, venue, city, state, event_type_id, event_type_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (event_id) DO UPDATE SET
+        INSERT INTO tournaments (gov_body, event_id, name, year, start_date, end_date, venue, city, state, event_type_id, event_type_name)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (gov_body, event_id) DO UPDATE SET
             name = COALESCE(EXCLUDED.name, tournaments.name),
             year = COALESCE(EXCLUDED.year, tournaments.year),
             start_date = COALESCE(EXCLUDED.start_date, tournaments.start_date),
@@ -291,50 +257,37 @@ def upsert_tournament(
             event_type_id = COALESCE(EXCLUDED.event_type_id, tournaments.event_type_id),
             event_type_name = COALESCE(EXCLUDED.event_type_name, tournaments.event_type_name)
         """,
-        [event_id, name, year, start_date, end_date, venue, city, state, event_type_id, event_type_name],
+        [GOV_BODY, event_id, name, year, start_date, end_date, venue, city, state, event_type_id, event_type_name],
     )
 
 
-def cleanup_orphaned_tournaments(conn: duckdb.DuckDBPyConnection) -> int:
+def cleanup_orphaned_tournaments(conn: psycopg.Connection) -> int:
     """
-    Delete tournaments that have no rounds or no matches.
+    Delete tournaments (for this governing body) that have no rounds or no matches.
     Returns number of tournaments deleted.
     """
-    # Check which tables exist
-    existing_tables = set(
-        r[0] for r in conn.execute("SHOW TABLES").fetchall()
-    )
-    has_rounds_table = "tournament_rounds" in existing_tables
-    has_matches_table = "matches" in existing_tables
+    no_rounds = conn.execute(
+        """--sql
+        SELECT t.event_id, t.name
+        FROM tournaments t
+        LEFT JOIN tournament_rounds tr ON tr.gov_body = t.gov_body AND tr.event_id = t.event_id
+        WHERE t.gov_body = %s AND tr.event_id IS NULL
+        """,
+        [GOV_BODY],
+    ).fetchall()
 
-    # Find tournaments with no rounds (only if tournament_rounds table exists)
-    no_rounds = []
-    if has_rounds_table:
-        no_rounds = conn.execute(
-            """--sql
-            SELECT t.event_id, t.name
-            FROM tournaments t
-            LEFT JOIN tournament_rounds tr ON t.event_id = tr.event_id
-            WHERE tr.event_id IS NULL
-            """
-        ).fetchall()
-
-    # Find tournaments with no matches (only if matches table exists)
-    no_matches = []
-    if has_matches_table and has_rounds_table:
-        no_matches = conn.execute(
-            """--sql
-            SELECT DISTINCT t.event_id, t.name
-            FROM tournaments t
-            LEFT JOIN matches m ON t.event_id = m.event_id
-            WHERE m.event_id IS NULL
-              AND t.event_id NOT IN (
-                  SELECT t2.event_id FROM tournaments t2
-                  LEFT JOIN tournament_rounds tr2 ON t2.event_id = tr2.event_id
-                  WHERE tr2.event_id IS NULL
-              )
-            """
-        ).fetchall()
+    no_matches = conn.execute(
+        """--sql
+        SELECT t.event_id, t.name
+        FROM tournaments t
+        JOIN tournament_rounds tr ON tr.gov_body = t.gov_body AND tr.event_id = t.event_id
+        LEFT JOIN matches m ON m.gov_body = t.gov_body AND m.event_id = t.event_id
+        WHERE t.gov_body = %s
+        GROUP BY t.event_id, t.name
+        HAVING COUNT(m.match_id) = 0
+        """,
+        [GOV_BODY],
+    ).fetchall()
 
     total_deleted = 0
 
@@ -344,14 +297,14 @@ def cleanup_orphaned_tournaments(conn: duckdb.DuckDBPyConnection) -> int:
             logger.debug("  - %s: %s", event_id, name)
         conn.execute(
             """--sql
-            DELETE FROM tournaments
-            WHERE event_id IN (
-                SELECT t.event_id
-                FROM tournaments t
-                LEFT JOIN tournament_rounds tr ON t.event_id = tr.event_id
-                WHERE tr.event_id IS NULL
-            )
-            """
+            DELETE FROM tournaments t
+            WHERE t.gov_body = %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM tournament_rounds tr
+                  WHERE tr.gov_body = t.gov_body AND tr.event_id = t.event_id
+              )
+            """,
+            [GOV_BODY],
         )
         total_deleted += len(no_rounds)
 
@@ -361,14 +314,14 @@ def cleanup_orphaned_tournaments(conn: duckdb.DuckDBPyConnection) -> int:
             logger.debug("  - %s: %s", event_id, name)
         conn.execute(
             """--sql
-            DELETE FROM tournaments
-            WHERE event_id IN (
-                SELECT DISTINCT t.event_id
-                FROM tournaments t
-                LEFT JOIN matches m ON t.event_id = m.event_id
-                WHERE m.event_id IS NULL
-            )
-            """
+            DELETE FROM tournaments t
+            WHERE t.gov_body = %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM matches m
+                  WHERE m.gov_body = t.gov_body AND m.event_id = t.event_id
+              )
+            """,
+            [GOV_BODY],
         )
         total_deleted += len(no_matches)
 
@@ -756,12 +709,9 @@ def run_scraper(args: argparse.Namespace) -> None:
         logger.warning(f"{Colors.YELLOW}No tournaments found for date range{Colors.RESET}")
         return
 
-    # 2. Open DuckDB and ensure tables exist
-    db_path = get_db_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    db = duckdb.connect(str(db_path))
+    # 2. Connect to Postgres and ensure schema
+    db = get_pg_connection()
     ensure_db(db)
-    ensure_rounds_table(db)
 
     # Cleanup orphaned tournaments
     logger.info("=" * 80)
@@ -818,9 +768,9 @@ def run_scraper(args: argparse.Namespace) -> None:
         # Check if we already have rounds for this event
         existing = db.execute(
             """--sql
-            SELECT COUNT(*) FROM tournament_rounds WHERE event_id = ?
+            SELECT COUNT(*) FROM tournament_rounds WHERE gov_body = %s AND event_id = %s
             """,
-            [t.event_id],
+            [GOV_BODY, t.event_id],
         ).fetchone()
 
         if existing and existing[0] > 0:
@@ -1164,13 +1114,13 @@ def run_scraper(args: argparse.Namespace) -> None:
                                     round_id = f"{chart_name}_{bout_label}".replace(" ", "_")
                                     db.execute(
                                         """--sql
-                                        INSERT INTO tournament_rounds (event_id, round_id, label, raw_html)
-                                        VALUES (?, ?, ?, ?)
-                                        ON CONFLICT (event_id, round_id) DO UPDATE SET
+                                        INSERT INTO tournament_rounds (gov_body, event_id, round_id, label, raw_html)
+                                        VALUES (%s, %s, %s, %s, %s)
+                                        ON CONFLICT (gov_body, event_id, round_id) DO UPDATE SET
                                             label = EXCLUDED.label,
                                             raw_html = EXCLUDED.raw_html
                                         """,
-                                        [t.event_id, round_id, bout_label, raw_html],
+                                        [GOV_BODY, t.event_id, round_id, bout_label, raw_html],
                                     )
                                     saved_count += 1
                                     
@@ -1248,13 +1198,13 @@ def run_scraper(args: argparse.Namespace) -> None:
                             # Save to database
                             db.execute(
                                 """--sql
-                                INSERT INTO tournament_rounds (event_id, round_id, label, raw_html)
-                                VALUES (?, ?, ?, ?)
-                                ON CONFLICT (event_id, round_id) DO UPDATE SET
+                                INSERT INTO tournament_rounds (gov_body, event_id, round_id, label, raw_html)
+                                VALUES (%s, %s, %s, %s, %s)
+                                ON CONFLICT (gov_body, event_id, round_id) DO UPDATE SET
                                     label = EXCLUDED.label,
                                     raw_html = EXCLUDED.raw_html
                                 """,
-                                [t.event_id, bout_id, bout_label, raw_html],
+                                [GOV_BODY, t.event_id, bout_id, bout_label, raw_html],
                             )
                             saved_count += 1
                             logger.debug("Saved bout %s: %s", bout_id, bout_label)
@@ -1364,13 +1314,13 @@ def run_scraper(args: argparse.Namespace) -> None:
                         # Save to database
                         db.execute(
                             """--sql
-                            INSERT INTO tournament_rounds (event_id, round_id, label, raw_html)
-                            VALUES (?, ?, ?, ?)
-                            ON CONFLICT (event_id, round_id) DO UPDATE SET
+                            INSERT INTO tournament_rounds (gov_body, event_id, round_id, label, raw_html)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (gov_body, event_id, round_id) DO UPDATE SET
                                 label = EXCLUDED.label,
                                 raw_html = EXCLUDED.raw_html
                             """,
-                            [t.event_id, rid, label, raw_html],
+                            [GOV_BODY, t.event_id, rid, label, raw_html],
                         )
                         saved_count += 1
                         logger.debug("Saved round %s: %s", rid, label)

@@ -1,75 +1,32 @@
 """
 Observable Framework data loader for leaderboards/[gov_body] dynamic route.
-Loads individual wrestler leaderboard data for a specific gov_body parameter.
+Loads individual wrestler leaderboard data for a specific gov_body parameter from Postgres via DuckDB.
 """
 
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
-import logging
 import argparse
-import duckdb
+import logging
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "code"))
+
+from db import export_parquet_to_stdout  # noqa: E402
 
 
 def main() -> None:
 	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
 	log = logging.getLogger("individual_leaderboards_loader")
 
-	# Parse command-line arguments
 	parser = argparse.ArgumentParser(description="Load individual leaderboards for a specific gov_body")
 	parser.add_argument("--gov_body", required=True, help="The governing body identifier (e.g., vhsl)")
 	args = parser.parse_args()
-	
 	gov_body = args.gov_body
-	
+
 	log.info("Loading individual leaderboards for gov_body: %s", gov_body)
 
-	# Find the output directory relative to this script
-	script_dir = os.path.dirname(os.path.abspath(__file__))
-	output_dir = os.path.normpath(os.path.join(script_dir, "..", "..", "..", "..", "output"))
-	
-	# Construct the database file path
-	db_file = Path(output_dir) / f"trackwrestling_{gov_body}.db"
-	
-	if not db_file.exists():
-		log.warning("Database file not found: %s. Returning empty dataset.", db_file)
-		# Output an empty parquet file
-		import pyarrow as pa
-		import pyarrow.parquet as pq
-		schema = pa.schema([
-			('name', pa.string()),
-			('team', pa.string()),
-			('season', pa.string()),
-			('matches_played', pa.int64()),
-			('wins', pa.int64()),
-			('losses', pa.int64()),
-			('wins_fall', pa.int64()),
-			('highest_elo', pa.float64()),
-			('current_elo', pa.float64()),
-			('current_elo', pa.float64()),
-			('biggest_upset_win', pa.float64()),
-			('upset_event_id', pa.int64()),
-			('upset_date', pa.string()),
-			('upset_tournament_name', pa.string()),
-			('upset_opponent_name', pa.string()),
-			('upset_opponent_team', pa.string()),
-			('upset_result', pa.string()),
-			('win_pct', pa.float64()),
-			('fall_pct', pa.float64())
-		])
-		empty_table = pa.table({field.name: pa.array([], type=field.type) for field in schema})
-		pq.write_table(empty_table, sys.stdout.buffer)
-		sys.stdout.flush()
-		return
-	
-	log.info("Found database: %s", db_file)
-
-	# Query to calculate individual leaderboards with season support
 	sql = """--sql
-	COPY (
 	  WITH match_data AS (
 	    SELECT
 	      wh.name,
@@ -82,14 +39,17 @@ def main() -> None:
 	      wh.pre_elo,
 	      wh.post_elo,
 	      wh.adjustment,
+	      wh.opponent_name,
+	      wh.opponent_team,
 	      -- Calculate season: Sept 1 to Aug 31
 	      CASE 
 	        WHEN MONTH(wh.start_date) >= 9 
 	        THEN CAST(YEAR(wh.start_date) AS VARCHAR) || '-' || CAST(YEAR(wh.start_date) + 1 AS VARCHAR)
 	        ELSE CAST(YEAR(wh.start_date) - 1 AS VARCHAR) || '-' || CAST(YEAR(wh.start_date) AS VARCHAR)
 	      END AS season
-	    FROM wrestler_history wh
-	    WHERE wh.start_date IS NOT NULL
+	    FROM pg.wrestler_history wh
+	    WHERE wh.gov_body = ?
+	      AND wh.start_date IS NOT NULL
 	      AND wh.bye = FALSE
 	  ),
 	  wrestler_stats AS (
@@ -108,30 +68,19 @@ def main() -> None:
 	  ),
 	  upset_details AS (
 	    SELECT
-	      wh.name,
-	      wh.team,
-	      CASE 
-	        WHEN MONTH(wh.start_date) >= 9 
-	        THEN CAST(YEAR(wh.start_date) AS VARCHAR) || '-' || CAST(YEAR(wh.start_date) + 1 AS VARCHAR)
-	        ELSE CAST(YEAR(wh.start_date) - 1 AS VARCHAR) || '-' || CAST(YEAR(wh.start_date) AS VARCHAR)
-	      END AS season,
-	      wh.event_id,
-	      wh.start_date,
-	      wh.decision_type,
-	      wh.opponent_name,
-	      wh.opponent_team,
-	      wh.adjustment,
-	      ROW_NUMBER() OVER (PARTITION BY wh.name, wh.team, 
-	        CASE 
-	          WHEN MONTH(wh.start_date) >= 9 
-	          THEN CAST(YEAR(wh.start_date) AS VARCHAR) || '-' || CAST(YEAR(wh.start_date) + 1 AS VARCHAR)
-	          ELSE CAST(YEAR(wh.start_date) - 1 AS VARCHAR) || '-' || CAST(YEAR(wh.start_date) AS VARCHAR)
-	        END
-	        ORDER BY wh.adjustment DESC) as rn
-	    FROM wrestler_history wh
-	    WHERE wh.role IN ('W', 'winner') 
-	      AND wh.adjustment > 0
-	      AND wh.bye = FALSE
+	      md.name,
+	      md.team,
+	      md.season,
+	      md.event_id,
+	      md.start_date,
+	      md.decision_type,
+	      md.opponent_name,
+	      md.opponent_team,
+	      md.adjustment,
+	      ROW_NUMBER() OVER (PARTITION BY md.name, md.team, md.season ORDER BY md.adjustment DESC) as rn
+	    FROM match_data md
+	    WHERE md.role IN ('W', 'winner') 
+	      AND md.adjustment > 0
 	  )
 	  SELECT
 	    ws.name,
@@ -159,76 +108,15 @@ def main() -> None:
 	      ELSE 0
 	    END as fall_pct
 	  FROM wrestler_stats ws
-	  LEFT JOIN wrestlers w ON ws.name = w.name
+	  LEFT JOIN pg.wrestlers w ON w.gov_body = ? AND ws.name = w.name
 	  LEFT JOIN upset_details ud ON ws.name = ud.name AND ws.team = ud.team AND ws.season = ud.season AND ud.rn = 1
-	  LEFT JOIN tournaments t ON ud.event_id = t.event_id
+	  LEFT JOIN pg.tournaments t ON t.gov_body = ? AND ud.event_id = t.event_id
 	  WHERE ws.matches_played > 0
 	  ORDER BY ws.season DESC, ws.matches_played DESC
-	) TO ? (FORMAT 'parquet')
 	"""
 
-	parquet_tmp = None
-	parquet_tmp_name: str | None = None
-	con = None
-	try:
-		con = duckdb.connect(str(db_file), read_only=True)
-		
-		parquet_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
-		parquet_tmp_name = parquet_tmp.name
-		parquet_tmp.close()  # DuckDB needs to open it for writing
-
-		con.execute(sql, [parquet_tmp_name])
-		
-		# Stream parquet file to stdout
-		with open(parquet_tmp_name, "rb") as f:
-			sys.stdout.buffer.write(f.read())
-			sys.stdout.flush()
-		
-		log.info("Parquet file streamed to stdout successfully")
-		
-	except Exception as e:
-		# Check if error is due to missing table
-		if "wrestler_history" in str(e) or "tournaments" in str(e):
-			log.warning("Required tables not found: %s. Returning empty dataset.", e)
-			# Output empty parquet
-			import pyarrow as pa
-			import pyarrow.parquet as pq
-			schema = pa.schema([
-				('name', pa.string()),
-				('team', pa.string()),
-				('season', pa.string()),
-				('matches_played', pa.int64()),
-				('wins', pa.int64()),
-				('losses', pa.int64()),
-				('wins_fall', pa.int64()),
-				('highest_elo', pa.float64()),
-				('biggest_upset_win', pa.float64()),
-				('upset_event_id', pa.int64()),
-				('upset_date', pa.string()),
-				('upset_tournament_name', pa.string()),
-				('upset_opponent_name', pa.string()),
-				('upset_opponent_team', pa.string()),
-				('upset_result', pa.string()),
-				('win_pct', pa.float64()),
-				('fall_pct', pa.float64())
-			])
-			empty_table = pa.table({field.name: pa.array([], type=field.type) for field in schema})
-			pq.write_table(empty_table, sys.stdout.buffer)
-			sys.stdout.flush()
-		else:
-			log.error("Failed to export individual leaderboards: %s", e)
-			sys.exit(1)
-	finally:
-		try:
-			if parquet_tmp_name:
-				os.unlink(parquet_tmp_name)
-		except Exception:
-			pass
-		try:
-			if con:
-				con.close()
-		except Exception:
-			pass
+	export_parquet_to_stdout(sql, [gov_body, gov_body, gov_body])
+	log.info("Parquet file streamed to stdout successfully")
 
 
 if __name__ == "__main__":

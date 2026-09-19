@@ -3,16 +3,33 @@ name: Deploy
 on:
   # Run this workflow whenever a new commit is pushed to main.
   push: {branches: [main]}
-  # Run this workflow once per week on Mondaoy, at 10:15 UTC
+  # Run this workflow once per week on Monday, at 10:15 UTC
   schedule: [{cron: "15 10 * * 1"}]
   # Run this workflow when triggered manually in GitHub’s UI.
   workflow_dispatch: {}
+
+# Only one run may touch the database / firewall at a time
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  # Postgres (Entra ID auth; no passwords). Python mints tokens itself via GitHub OIDC.
+  PGHOST: ${{ vars.PGHOST }}
+  PGDATABASE: ${{ vars.PGDATABASE }}
+  PGUSER: ${{ vars.PGUSER }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  PG_RESOURCE_GROUP: ${{ vars.AZURE_PG_RESOURCE_GROUP }}
+  PG_SERVER_NAME: ${{ vars.AZURE_PG_SERVER_NAME }}
+  FIREWALL_RULE: gh-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       pages: write
       id-token: write
     environment:
@@ -20,9 +37,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true # database files use Git LFS
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
@@ -51,70 +65,60 @@ jobs:
         working-directory: observable-framework-app
         run: npm ci
 
-      - name: Check install by showing versions
-        run: |
-          echo "PATH: "
-          echo $PATH
-          python --version
-          uv --version
-          echo "Node: "
-          node --version
-          echo "NPM: "
-          npm --version
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Process NVWF data
-        env:
-          GOVERNING_BODY_ID: "230728132"
-          GOVERNING_BODY_ACRONYM: "NVWF"
-          GOVERNING_BODY_NAME: "Northern Virginia Wrestling Federation"
+      - name: Open Postgres firewall for this runner
         run: |
-          uv run code/scrape_tournaments.py --lookback-weeks 1
-          uv run code/parse_round_html.py
-          uv run code/calculate_elo.py
+          RUNNER_IP=$(curl -fsS https://api.ipify.org)
+          echo "::add-mask::$RUNNER_IP"
+          az postgres flexible-server firewall-rule create \
+            --resource-group "$PG_RESOURCE_GROUP" --name "$PG_SERVER_NAME" \
+            --rule-name "$FIREWALL_RULE" \
+            --start-ip-address "$RUNNER_IP" --end-ip-address "$RUNNER_IP" \
+            --output none
 
-      - name: Process NYSPHSAA data
-        env:
-          GOVERNING_BODY_ID: "38"
-          GOVERNING_BODY_ACRONYM: "NYSPHSAA"
-          GOVERNING_BODY_NAME: "New York State Public High School Athletic Association"
+      - name: Ensure database schema
+        run: uv run db/init_schema.py
+
+      - name: Scrape, parse and calculate Elo for every governing body
         run: |
-          uv run code/scrape_tournaments.py --lookback-weeks 1
-          uv run code/parse_round_html.py
-          uv run code/calculate_elo.py
+          set -euo pipefail
+          jq -c '.[]' governing_bodies.json | while read -r gb; do
+            export GOVERNING_BODY_ID=$(jq -r '.id' <<<"$gb")
+            export GOVERNING_BODY_ACRONYM=$(jq -r '.acronym' <<<"$gb")
+            export GOVERNING_BODY_NAME=$(jq -r '.name' <<<"$gb")
+            echo "::group::${GOVERNING_BODY_ACRONYM} — ${GOVERNING_BODY_NAME}"
+            uv run code/scrape_tournaments.py --lookback-weeks 1
+            uv run code/parse_round_html.py
+            uv run code/calculate_elo.py
+            echo "::endgroup::"
+          done
 
-      - name: Process VHSL data
-        env:
-          GOVERNING_BODY_ID: "52"
-          GOVERNING_BODY_ACRONYM: "VHSL"
-          GOVERNING_BODY_NAME: "Virginia High School League"
-        run: |
-          uv run code/scrape_tournaments.py --lookback-weeks 1
-          uv run code/parse_round_html.py
-          uv run code/calculate_elo.py
-
-      - name: Process VA_USA data
-        env:
-          GOVERNING_BODY_ID: "253734046"
-          GOVERNING_BODY_ACRONYM: "VA_USA"
-          GOVERNING_BODY_NAME: "Virginia USA Wrestling"
-        run: |
-          uv run code/scrape_tournaments.py --lookback-weeks 1
-          uv run code/parse_round_html.py
-          uv run code/calculate_elo.py
-
-      - name: Commit and push updated database files
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add output/
-          git diff-index --quiet HEAD || git commit -m "Weekly parsing update of database files [skip ci]"
-          git push
-
-      - name: Activate venv, execute the data loaders and build the static Observable Framework site
+      - name: Execute the data loaders and build the static Observable Framework site
         working-directory: observable-framework-app
         run: |
           source ../.venv/bin/activate
           npm run build
+
+      - name: Azure re-login (ARM token may have expired during long runs)
+        if: always()
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Close Postgres firewall
+        if: always()
+        run: |
+          az postgres flexible-server firewall-rule delete \
+            --resource-group "$PG_RESOURCE_GROUP" --name "$PG_SERVER_NAME" \
+            --rule-name "$FIREWALL_RULE" --yes --output none || true
 
       - uses: actions/configure-pages@v4
       - uses: actions/upload-pages-artifact@v3

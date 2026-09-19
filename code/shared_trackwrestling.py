@@ -18,7 +18,12 @@ from urllib.parse import urlparse, parse_qs, urlencode
 import time
 from typing import List, Optional, Tuple, Any
 
-import duckdb
+import psycopg
+
+try:
+    from .config import GOV_BODY
+except ImportError:
+    from config import GOV_BODY
 
 # Module logger
 logger = logging.getLogger(__name__)
@@ -87,25 +92,8 @@ def validate_round_html(html: Optional[str], event_id: str, label: str) -> Tuple
 # Database Helpers
 # ============================================================================
 
-def ensure_rounds_table(conn: duckdb.DuckDBPyConnection) -> None:
-    """Ensure the tournament_rounds table exists."""
-    conn.execute(
-        """--sql
-        CREATE TABLE IF NOT EXISTS tournament_rounds (
-            event_id TEXT,
-            round_id TEXT,
-            label TEXT,
-            raw_html TEXT,
-            parsed_ok BOOLEAN,
-            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (event_id, round_id)
-        );
-        """
-    )
-
-
 def upsert_round(
-    conn: duckdb.DuckDBPyConnection,
+    conn: psycopg.Connection,
     event_id: str,
     round_id: str,
     label: str,
@@ -116,7 +104,7 @@ def upsert_round(
     Insert or update a tournament round record.
     
     Args:
-        conn: DuckDB connection
+        conn: Postgres connection
         event_id: Tournament event ID
         round_id: Round identifier
         label: Human-readable round label
@@ -126,26 +114,26 @@ def upsert_round(
     if raw_html is None:
         conn.execute(
             """--sql
-            INSERT INTO tournament_rounds AS tr (event_id, round_id, label, parsed_ok)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (event_id, round_id) DO UPDATE SET
+            INSERT INTO tournament_rounds AS tr (gov_body, event_id, round_id, label, parsed_ok)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (gov_body, event_id, round_id) DO UPDATE SET
                 label = EXCLUDED.label,
                 parsed_ok = COALESCE(EXCLUDED.parsed_ok, tr.parsed_ok)
             """,
-            [event_id, round_id, label, False if validation_failed else None],
+            [GOV_BODY, event_id, round_id, label, False if validation_failed else None],
         )
     else:
         parsed_ok_value = False if validation_failed else None
         conn.execute(
             """--sql
-            INSERT INTO tournament_rounds AS tr (event_id, round_id, label, raw_html, parsed_ok)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (event_id, round_id) DO UPDATE SET
+            INSERT INTO tournament_rounds AS tr (gov_body, event_id, round_id, label, raw_html, parsed_ok)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (gov_body, event_id, round_id) DO UPDATE SET
                 label = EXCLUDED.label,
                 raw_html = EXCLUDED.raw_html,
                 parsed_ok = COALESCE(EXCLUDED.parsed_ok, tr.parsed_ok)
             """,
-            [event_id, round_id, label, raw_html, parsed_ok_value],
+            [GOV_BODY, event_id, round_id, label, raw_html, parsed_ok_value],
         )
 
 

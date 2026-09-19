@@ -1,13 +1,14 @@
 """
 Configuration module for wrestling-stats.
 
-Loads governing body settings from environment variables (via .env file).
-Use these values throughout the codebase instead of hardcoding organization-specific values.
+Loads governing body and database settings from environment variables (via .env file).
 
 Environment Variables:
-    GOVERNING_BODY_ID: Numeric ID for TrackWrestling's gbId parameter (default: 38)
-    GOVERNING_BODY_ACRONYM: Short identifier for DB names, etc. (default: NYSPHSAA)
-    GOVERNING_BODY_NAME: Full display name (default: New York State Public High School Athletic Association)
+    GOVERNING_BODY_ID: Numeric ID for TrackWrestling's gbId parameter
+    GOVERNING_BODY_ACRONYM: Short identifier; lowercased as the gov_body discriminator in the DB
+    GOVERNING_BODY_NAME: Full display name
+    PGHOST / PGDATABASE / PGUSER: Azure Database for PostgreSQL connection settings (Entra ID auth)
+    PG_SCHEMA: Schema holding all wrestling tables (default: trackwrestling)
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ except ImportError:
 # Numeric ID used in TrackWrestling's gbId query parameter
 GOVERNING_BODY_ID: int = int(os.getenv("GOVERNING_BODY_ID", "230728132"))
 
-# Short acronym for database filenames (lowercase used in paths)
+# Short acronym; lowercase form is the gov_body key in every table
 GOVERNING_BODY_ACRONYM: str = os.getenv("GOVERNING_BODY_ACRONYM", "NVWF")
 
 # Full display name
@@ -42,20 +43,15 @@ GOVERNING_BODY_NAME: str = os.getenv(
     "Northern Virginia Wrestling Federation"
 )
 
-
-# ----- Derived Values -----
-
-def get_db_filename() -> str:
-    """Return the database filename based on the governing body acronym."""
-    return f"trackwrestling_{GOVERNING_BODY_ACRONYM.lower()}.db"
+GOV_BODY: str = GOVERNING_BODY_ACRONYM.lower()
 
 
-def get_db_path() -> Path:
-    """Return the full path to the database file."""
-    project_root = Path(__file__).parent.parent
-    return project_root / "output" / get_db_filename()
+# ----- PostgreSQL Configuration -----
 
+PGHOST: str = os.getenv("PGHOST", "jsl6906.postgres.database.azure.com")
+PGDATABASE: str = os.getenv("PGDATABASE", "personal_storage")
+# Entra principal name (UPN locally, app registration name in CI)
+PGUSER: str = os.getenv("PGUSER", "")
+PG_SCHEMA: str = os.getenv("PG_SCHEMA", "trackwrestling")
 
-# Convenience alias for backwards compatibility
-DB_PATH = get_db_path()
 

@@ -1,8 +1,19 @@
-// Database schema for wrestling-stats
-// Tracks tournament data scraped from TrackWrestling
+// Database schema for wrestling-stats (Azure PostgreSQL, schema `trackwrestling`)
+// Tracks tournament data scraped from TrackWrestling. Every table carries gov_body,
+// the lowercase governing-body acronym, so all governing bodies share one schema.
+// Authoritative DDL: db/schema.sql
+
+Table governing_bodies {
+  gov_body varchar [pk, note: 'Lowercase acronym (e.g., nvwf, va_usa)']
+  tw_gb_id bigint [note: 'TrackWrestling gbId']
+  acronym varchar [note: 'Display acronym']
+  name varchar [note: 'Full name']
+  first_seen timestamp [default: `CURRENT_TIMESTAMP`]
+}
 
 Table tournaments {
-  event_id varchar [pk, note: 'TrackWrestling event ID']
+  gov_body varchar [note: 'FK to governing_bodies.gov_body']
+  event_id varchar [note: 'TrackWrestling event ID']
   name varchar [note: 'Tournament name']
   year integer [note: 'Year extracted from tournament name or start_date']
   start_date date [note: 'Tournament start date']
@@ -17,6 +28,10 @@ Table tournaments {
   event_type_name varchar [note: 'Human-readable event type name']
   first_seen timestamp [default: `CURRENT_TIMESTAMP`, note: 'When record was first created']
   
+  indexes {
+    (gov_body, event_id) [pk]
+  }
+  
   note: 'Tournament metadata from TrackWrestling discovery'
 }
 
@@ -28,6 +43,7 @@ Table tournaments {
 // 5 = seasontournaments (Season/league tournaments)
 
 Table tournament_rounds {
+  gov_body varchar
   event_id varchar [note: 'FK to tournaments.event_id']
   round_id varchar [note: 'Round identifier from TrackWrestling (e.g., "123456" for rounds, "N.1" for dual meet bouts)']
   label varchar [note: 'Round display label (e.g., "Round 1", "Finals") or dual meet matchup (e.g., "1.  Woodgrove vs Dominion")']
@@ -36,7 +52,7 @@ Table tournament_rounds {
   first_seen timestamp [default: `CURRENT_TIMESTAMP`, note: 'When record was first created']
   
   indexes {
-    (event_id, round_id) [pk]
+    (gov_body, event_id, round_id) [pk]
   }
   
   note: '''Raw HTML captured per tournament round for later parsing.
@@ -47,9 +63,11 @@ Table tournament_rounds {
     raw_html contains a tw-table with match results.'''
 }
 
-Ref: tournament_rounds.event_id > tournaments.event_id
+Ref: tournament_rounds.(gov_body, event_id) > tournaments.(gov_body, event_id)
 
 Table matches {
+  match_id bigint [pk, increment, note: 'Surrogate key (identity)']
+  gov_body varchar
   event_id varchar [note: 'FK to tournaments.event_id']
   round_id varchar [note: 'FK to tournament_rounds.round_id']
   weight_class varchar [note: 'Weight class (e.g., "106", "285")']
@@ -66,15 +84,41 @@ Table matches {
   fall_time varchar [note: 'Time of fall if applicable']
   bye boolean [note: 'Whether this was a bye (no opponent)']
   first_seen timestamp [default: `CURRENT_TIMESTAMP`, note: 'When record was first created']
+  winner_elo_after double
+  winner_elo_adjustment double
+  loser_elo_after double
+  loser_elo_adjustment double
+  elo_computed_at timestamp [note: 'NULL until calculate_elo.py processes the match']
+  elo_sequence bigint
+  winner_elo_before double
+  loser_elo_before double
+  expected_winner double
+  expected_loser double
+  k_applied double
+  k_type_mult double
+  k_expected_mult double
+  k_mov_mult double
+  k_quick_mult double
+  margin integer
+  fall_seconds integer
+  round_order integer
+  winner_prev_matches integer
+  loser_prev_matches integer
   
-  note: 'Individual match results parsed from round HTML'
+  indexes {
+    (gov_body, event_id, round_id)
+    (gov_body, elo_sequence)
+  }
+  
+  note: 'Individual match results parsed from round HTML, plus Elo outputs'
 }
 
-Ref: matches.event_id > tournaments.event_id
-Ref: matches.(event_id, round_id) > tournament_rounds.(event_id, round_id)
+Ref: matches.(gov_body, event_id) > tournaments.(gov_body, event_id)
+Ref: matches.(gov_body, event_id, round_id) > tournament_rounds.(gov_body, event_id, round_id)
 
 Table wrestlers {
-  name varchar [pk, note: 'Wrestler name (unique identifier)']
+  gov_body varchar
+  name varchar [note: 'Wrestler name']
   current_elo double [note: 'Current ELO rating']
   matches_played integer [note: 'Total matches played']
   last_event_id varchar [note: 'Most recent tournament event_id']
@@ -94,14 +138,19 @@ Table wrestlers {
   opponent_elo_count integer [note: 'Count of opponents (for avg calculation)']
   opponent_avg_elo double [note: 'Average ELO of opponents faced']
   
+  indexes {
+    (gov_body, name) [pk]
+  }
+  
   note: 'Current wrestler stats and ELO ratings'
 }
 
-Ref: wrestlers.last_event_id > tournaments.event_id
+Ref: wrestlers.(gov_body, last_event_id) > tournaments.(gov_body, event_id)
 
 Table wrestler_history {
-  match_rowid bigint [note: 'Reference to matches table rowid']
+  match_id bigint [note: 'FK to matches.match_id (ON DELETE CASCADE)']
   role varchar [note: 'W for winner, L for loser']
+  gov_body varchar
   name varchar [note: 'Wrestler name']
   team varchar [note: 'Team at time of match']
   event_id varchar [note: 'FK to tournaments.event_id']
@@ -132,11 +181,14 @@ Table wrestler_history {
   last_updated timestamp [default: `CURRENT_TIMESTAMP`, note: 'When record was last updated']
   
   indexes {
-    (match_rowid, role) [pk]
+    (match_id, role) [pk]
+    (gov_body, name)
+    (gov_body, event_id)
   }
   
   note: 'Historical record of each wrestler match with ELO details'
 }
 
-Ref: wrestler_history.event_id > tournaments.event_id
-Ref: wrestler_history.name > wrestlers.name
+Ref: wrestler_history.match_id > matches.match_id
+Ref: wrestler_history.(gov_body, event_id) > tournaments.(gov_body, event_id)
+Ref: wrestler_history.(gov_body, name) > wrestlers.(gov_body, name)
