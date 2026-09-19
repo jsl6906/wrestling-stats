@@ -77,8 +77,8 @@ jobs:
           RUNNER_IP=$(curl -fsS https://api.ipify.org)
           echo "::add-mask::$RUNNER_IP"
           az postgres flexible-server firewall-rule create \
-            --resource-group "$PG_RESOURCE_GROUP" --name "$PG_SERVER_NAME" \
-            --rule-name "$FIREWALL_RULE" \
+            --resource-group "$PG_RESOURCE_GROUP" --server-name "$PG_SERVER_NAME" \
+            --name "$FIREWALL_RULE" \
             --start-ip-address "$RUNNER_IP" --end-ip-address "$RUNNER_IP" \
             --output none
 
@@ -115,10 +115,11 @@ jobs:
 
       - name: Close Postgres firewall
         if: always()
+        continue-on-error: true
         run: |
           az postgres flexible-server firewall-rule delete \
-            --resource-group "$PG_RESOURCE_GROUP" --name "$PG_SERVER_NAME" \
-            --rule-name "$FIREWALL_RULE" --yes --output none || true
+            --resource-group "$PG_RESOURCE_GROUP" --server-name "$PG_SERVER_NAME" \
+            --name "$FIREWALL_RULE" --yes --output none
 
       - uses: actions/configure-pages@v4
       - uses: actions/upload-pages-artifact@v3
