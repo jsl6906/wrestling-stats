@@ -64,7 +64,18 @@ def main() -> None:
 
         log.info("Applying db/schema.sql")
         ensure_schema(conn)
-        # Tables created above by the admin need explicit grants (default privileges only cover future objects of this role)
+
+        # CI role must own the objects so init_schema.py (CREATE ... IF NOT EXISTS) can run as CI.
+        # Membership lets the admin keep full access and is required to transfer ownership.
+        log.info("Transferring ownership of schema objects to %s", role)
+        conn.execute(sql.SQL("GRANT {} TO CURRENT_USER").format(r))
+        conn.execute(sql.SQL("ALTER SCHEMA {} OWNER TO {}").format(s, r))
+        tables = conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = %s", [PG_SCHEMA]
+        ).fetchall()
+        for (t,) in tables:
+            # Owned identity sequences follow the table
+            conn.execute(sql.SQL("ALTER TABLE {}.{} OWNER TO {}").format(s, sql.Identifier(t), r))
         conn.execute(sql.SQL("GRANT ALL ON ALL TABLES IN SCHEMA {} TO {}").format(s, r))
         conn.execute(sql.SQL("GRANT ALL ON ALL SEQUENCES IN SCHEMA {} TO {}").format(s, r))
         log.info("Bootstrap complete")
