@@ -5,7 +5,7 @@ Data is stored in Azure Database for PostgreSQL (schema `trackwrestling`) using 
 
 ## Setup
 
-1. Install dependencies: `uv sync`
+1. Install dependencies with Python 3.13 (see [`.python-version`](./.python-version)) and Node.js 22 (the CI runtime): `uv sync --locked` and `npm ci --prefix observable-framework-app`.
 2. Sign in to Azure: `az login` (your account must be allowed on the Postgres server firewall)
 3. Configure: copy `.env.example` to `.env` and set the governing body variables.
 4. First-time only (Entra admin): `npm run bootstrap-db` creates the schema, tables and the CI role.
@@ -37,6 +37,12 @@ opens a temporary firewall rule for the runner, runs scrape → parse → Elo fo
 
 Repository secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`.
 Repository variables: `PGHOST`, `PGDATABASE`, `PGUSER`, `AZURE_PG_RESOURCE_GROUP`, `AZURE_PG_SERVER_NAME`.
+
+## Dependency maintenance
+
+Dependabot opens weekly update PRs for Python (`uv`), the Observable app (`npm`), and GitHub Actions. CI installs from the committed lockfiles, pins actions to release commits, and pins the runner to Ubuntu 26.04 so runner upgrades can be tested separately with Playwright.
+
+For manual refreshes, run `uv lock --upgrade` and `npm update --prefix observable-framework-app`, then review the lockfile diffs and run `uv run --locked python test/test_parse_matches.py`. Test DuckDB and pandas major upgrades separately with the PostgreSQL-backed site loaders before changing their version bounds.
 
 ## Project Structure
 

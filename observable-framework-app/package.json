@@ -9,14 +9,14 @@
     "observable": "observable"
   },
   "dependencies": {
-    "@observablehq/framework": "^1.13.3",
-    "d3-dsv": "^3.0.1",
-    "d3-time-format": "^4.1.0"
+    "@observablehq/framework": "^1.13.4",
+    "d3-dsv": "^3.0.2",
+    "d3-time-format": "^4.1.1"
   },
   "devDependencies": {
-    "rimraf": "^5.0.5"
+    "rimraf": "^6.1.4"
   },
   "engines": {
-    "node": ">=18"
+    "node": "^20.0.0 || >=22"
   }
 }
