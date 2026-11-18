@@ -31,7 +31,7 @@ const meta = seasonMeta.find((d) => d.season === season);
 // Inputs.table skips formatting null cells, so wrestlers unranked 30 days ago get a "new" sentinel.
 const ranked = rankingsAll.filter((d) => d.season === season).map((d) => (d.rank30 == null ? {...d, move: "new"} : d));
 const weights = new Map(
-  d3.sort(d3.groups(ranked.filter((d) => d.w_key && d.w_n >= 5), (d) => d.w_key), ([k]) => k, compareWeightKeys)
+  d3.sort(d3.groups(ranked.filter((d) => d.w_key && d.w_n >= 5), (d) => d.w_key), ([a], [b]) => compareWeightKeys(a, b))
 );
 const teams = teamsAll.filter((d) => d.season === season);
 const lastDate = meta.last_date;
