@@ -114,18 +114,6 @@ export function compareWeightKeys(a, b) {
   return age(pa[1]) - age(pb[1]) || pa[1].localeCompare(pb[1]) || +pa[2] - +pb[2];
 }
 
-// Standard competition ranking (1, 2, 2, 4) over rows sorted by `value` descending.
-export function competitionRank(rows, value, key = "rank") {
-  const sorted = [...rows].sort((a, b) => value(b) - value(a));
-  let prev, rank = 0;
-  return sorted.map((d, i) => {
-    const v = value(d);
-    if (i === 0 || v !== prev) rank = i + 1;
-    prev = v;
-    return {...d, [key]: rank};
-  });
-}
-
 export function pageHref(page, govBody, params = {}) {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ""));
   return `../${page}/${govBody}${q.size ? `?${q}` : ""}`;

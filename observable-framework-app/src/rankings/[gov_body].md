@@ -3,18 +3,20 @@ toc: false
 ---
 
 ```js
-import {MIN_SEASON_MATCHES, fmtDate, fmtInt, fmtSigned, formatName, getUrlParam, parseDay, plain, record, setUrlParams, shortSeason} from "../components/format.js";
+import {MIN_SEASON_MATCHES, compareWeightKeys, fmtDate, fmtInt, fmtSigned, formatName, getUrlParam, parseDay, plain, record, setUrlParams, shortSeason} from "../components/format.js";
 import {badge, delta, emptyState, kpi, nameLink} from "../components/ui.js";
-import {seasonList, seasonRankings, teamRankings, weightRankings} from "../components/rankings.js";
 ```
 
 ```js
 const gb = observable.params.gov_body;
 const govBodies = await FileAttachment("../data/gov_bodies.json").json();
 const gbInfo = govBodies.find((d) => d.suffix === gb) ?? {label: gb.toUpperCase(), fullName: ""};
-const seasonsAll = plain(await FileAttachment(`../data/gb/${observable.params.gov_body}/seasons.parquet`).parquet());
+// Rankings are precomputed by the data/gb archive loader; this page only filters and displays them.
+const seasonMeta = plain(await FileAttachment(`../data/gb/${observable.params.gov_body}/season_meta.parquet`).parquet());
+const rankingsAll = plain(await FileAttachment(`../data/gb/${observable.params.gov_body}/rankings.parquet`).parquet());
+const teamsAll = plain(await FileAttachment(`../data/gb/${observable.params.gov_body}/teams.parquet`).parquet());
 const trendAll = plain(await FileAttachment(`../data/gb/${observable.params.gov_body}/trend.parquet`).parquet());
-const seasons = seasonList(seasonsAll);
+const seasons = seasonMeta.map((d) => d.season);
 const seasonInput = Inputs.select(seasons, {
   label: "Season",
   value: seasons.includes(getUrlParam("season")) ? getUrlParam("season") : seasons[0],
@@ -25,13 +27,15 @@ const season = Generators.input(seasonInput);
 
 ```js
 setUrlParams({season: season === seasons[0] ? null : season});
-const isCurrent = season === seasons[0];
-const seasonRows = seasonsAll.filter((d) => d.season === season);
-const ranked = seasonRankings(seasonRows);
-const weights = weightRankings(ranked);
-const teams = teamRankings(ranked);
-const lastDate = seasonRows.reduce((m, d) => (d.last_date > m ? d.last_date : m), "");
-const totalMatches = Math.round(seasonRows.reduce((s, d) => s + d.matches, 0) / 2);
+const meta = seasonMeta.find((d) => d.season === season);
+// Inputs.table skips formatting null cells, so wrestlers unranked 30 days ago get a "new" sentinel.
+const ranked = rankingsAll.filter((d) => d.season === season).map((d) => (d.rank30 == null ? {...d, move: "new"} : d));
+const weights = new Map(
+  d3.sort(d3.groups(ranked.filter((d) => d.w_key && d.w_n >= 5), (d) => d.w_key), ([k]) => k, compareWeightKeys)
+);
+const teams = teamsAll.filter((d) => d.season === season);
+const lastDate = meta.last_date;
+const totalMatches = meta.matches;
 const movesLabel = `30 days to ${fmtDate(lastDate, {month: "short", day: "numeric"})}`;
 const top = ranked[0];
 const hottest = ranked.filter((d) => d.m30 > 0 && d.elo_change30 != null).sort((a, b) => b.elo_change30 - a.elo_change30)[0];
@@ -48,7 +52,7 @@ const hottest = ranked.filter((d) => d.m30 > 0 && d.elo_change30 != null).sort((
 </div>
 
 <div class="grid grid-cols-4">
-  ${kpi("Ranked wrestlers", fmtInt(ranked.length), `${fmtInt(seasonRows.length)} wrestled this season`, {tone: "navy"})}
+  ${kpi("Ranked wrestlers", fmtInt(ranked.length), `${fmtInt(meta.wrestlers)} wrestled this season`, {tone: "navy"})}
   ${kpi("Matches", fmtInt(totalMatches), `${fmtInt(teams.length)} ranked teams`, {tone: "navy"})}
   ${kpi("No. 1 overall", top ? nameLink(gb, top.name) : "–", top ? `${top.team ?? ""} · ${fmtInt(top.end_elo)} Elo` : "", {tone: "accent"})}
   ${kpi("Hottest wrestler", hottest ? nameLink(gb, hottest.name) : "–", hottest ? `${fmtSigned(hottest.elo_change30)} Elo in the ${movesLabel}` : "", {tone: "accent"})}
@@ -198,11 +202,11 @@ if (weight) {
 display(
   teams.length
     ? Inputs.table(teams, {
-        columns: ["rank", "team", "score", "ranked", "top25", "best"],
-        header: {rank: "#", team: "Team", score: "Power", ranked: "Ranked", top25: "Top 25", best: "Best wrestler"},
+        columns: ["rank", "team", "score", "ranked", "top25", "best_name"],
+        header: {rank: "#", team: "Team", score: "Power", ranked: "Ranked", top25: "Top 25", best_name: "Best wrestler"},
         format: {
           score: fmtInt,
-          best: (d) => html`${nameLink(gb, d.name)} <span class="muted small">${fmtInt(d.end_elo)}</span>`
+          best_name: (v, i, data) => html`${nameLink(gb, v)} <span class="muted small">${fmtInt(data[i].best_elo)}</span>`
         },
         width: {rank: 40, score: 60, ranked: 60, top25: 60},
         align: {rank: "right", score: "right", ranked: "right", top25: "right"},
@@ -220,7 +224,8 @@ display(
 
 ```js
 const topTeams = teams.slice(0, 15);
-const depthRows = topTeams.flatMap((t) => t.members);
+const topTeamSet = new Set(topTeams.map((d) => d.team));
+const depthRows = ranked.filter((d) => d.t_slot <= 10 && topTeamSet.has(d.team));
 display(
   topTeams.length
     ? resize((width) => Plot.plot({

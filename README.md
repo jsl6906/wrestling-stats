@@ -68,7 +68,7 @@ For manual refreshes, run `uv lock --upgrade` and `npm update --prefix observabl
 - `db/schema.sql`: Idempotent DDL (`db/init_schema.py` applies it)
 - `db/bootstrap_postgres.py`: One-time role/schema/grant bootstrap (Entra admin)
 - `observable-framework-app/`: Static site ("Wrestling Stats Explorer"); per governing body it has Rankings, Wrestler Profiles (`individual_stats`), Leaderboards and Head-to-Head (`compare`) pages
-  - `src/data/gb/[gov_body].zip.py`: one archive per body (season stats, rank trend, placements, plus match and rank history split into 32 name-hashed shards so a profile only downloads the shard it needs; keep `shardOf` in `src/components/format.js` in sync with `code/site_queries.py`)
+  - `src/data/gb/[gov_body].zip.py`: one archive per body (precomputed overall/weight/team rankings with 30-day movement, rank trend, placements, plus match and rank history split into 32 name-hashed shards so a profile only downloads the shard it needs; keep `shardOf` in `src/components/format.js` in sync with `code/site_queries.py`)
   - `src/data/summary.json.py`: home-page totals and top-rated wrestlers
   - `src/leaderboards/data/`: season leaderboard loaders
-  - `src/components/`: shared formatting, UI, rankings and chart helpers; `src/style.css` holds the light/dark theme
+  - `src/components/`: shared formatting, UI and chart helpers; `src/style.css` holds the light/dark theme

@@ -6,7 +6,10 @@ page only downloads what it references:
 - wrestlers.parquet         directory used by the search box (one row per wrestler)
 - history_NN.parquet        non-bye matches for wrestlers in shard NN (see site_queries.shard_of)
 - ranks_NN.parquet          weekly overall/weight-class rank snapshots for wrestlers in shard NN
-- seasons.parquet           one row per wrestler per season (record, start/end/peak Elo, 30-day Elo)
+- rankings.parquet          precomputed season power rankings: overall rank, 30-day rank/move,
+                            weight-class rank and team lineup slot for every ranked wrestler
+- teams.parquet             precomputed team power rankings per season
+- season_meta.parquet       per-season totals (wrestlers, matches, ranked, latest match date)
 - bands.parquet             weekly Elo percentiles of ranked wrestlers (chart context)
 - trend.parquet             weekly ranks for anyone in a season's top 25 (bump chart)
 - placements.parquet        USA Wrestling bracket placements
@@ -34,10 +37,13 @@ from site_queries import (  # noqa: E402
 	season_label_sql,
 	shard_of,
 	weight_key_sql,
-	weight_num_sql,
 )
 
 log = logging.getLogger("gb_archive_loader")
+
+# Team power = mean Elo of a team's TEAM_DEPTH best ranked wrestlers (needs TEAM_MIN_RANKED).
+TEAM_DEPTH = 10
+TEAM_MIN_RANKED = 5
 
 
 def build(con, gov_body: str, out_dir: Path) -> list[Path]:
@@ -50,7 +56,6 @@ def build(con, gov_body: str, out_dir: Path) -> list[Path]:
 			coalesce(tr.label, wh.round_detail) AS round,
 			wh.weight_class,
 			{weight_key_sql('wh.weight_class')} AS w_key,
-			{weight_num_sql('wh.weight_class')} AS w_num,
 			wh.opponent_name, wh.opponent_team, wh.opponent_pre_elo,
 			wh.pre_elo, wh.post_elo,
 			wh.decision_type, wh.decision_type_code,
@@ -161,27 +166,24 @@ def build(con, gov_body: str, out_dir: Path) -> list[Path]:
 			""",
 		)
 
-	copy(
-		"seasons.parquet",
+	# One row per wrestler per season: record, latest Elo and Elo 30 days before the season's last match
+	con.execute(
 		"""--sql
+		CREATE TEMP TABLE season_stats AS
 		WITH s AS (
 			SELECT season, name,
 				CAST(count(*) AS INTEGER) AS matches,
 				CAST(count(*) FILTER (WHERE role = 'W') AS INTEGER) AS wins,
 				CAST(count(*) FILTER (WHERE role = 'L') AS INTEGER) AS losses,
-				CAST(count(*) FILTER (WHERE role = 'W' AND is_fall) AS INTEGER) AS falls,
-				arg_min(pre_elo, ord) AS start_elo,
 				arg_max(post_elo, ord) AS end_elo,
-				max(post_elo) AS peak_elo,
 				max(d) AS last_d,
 				arg_max(team, ord) FILTER (WHERE team IS NOT NULL) AS team,
-				arg_max(w_key, ord) FILTER (WHERE w_key IS NOT NULL) AS w_key,
-				arg_max(w_num, ord) FILTER (WHERE w_num IS NOT NULL) AS w_num
+				arg_max(w_key, ord) FILTER (WHERE w_key IS NOT NULL) AS w_key
 			FROM m GROUP BY season, name
 		),
 		cut AS (SELECT season, CAST(max(d) - INTERVAL 30 DAY AS DATE) AS cutoff FROM m GROUP BY season),
 		s2 AS (SELECT s.*, c.cutoff FROM s JOIN cut c USING (season)),
-		-- Elo as of 30 days before the season's latest match (may come from an earlier season)
+		-- Elo as of the cutoff (may come from an earlier season)
 		career AS (SELECT name, d, arg_max(post_elo, ord) AS elo FROM m GROUP BY name, d),
 		e30 AS (
 			SELECT s2.season, s2.name, x.elo AS elo_30
@@ -191,15 +193,71 @@ def build(con, gov_body: str, out_dir: Path) -> list[Path]:
 			SELECT m.season, m.name, CAST(count(*) AS INTEGER) AS m30
 			FROM m JOIN cut c USING (season) WHERE m.d > c.cutoff GROUP BY m.season, m.name
 		)
-		SELECT s2.season, s2.name, s2.team, s2.w_key, CAST(s2.w_num AS INTEGER) AS w_num,
-			s2.matches, s2.wins, s2.losses, s2.falls,
-			round(s2.start_elo, 1) AS start_elo, round(s2.end_elo, 1) AS end_elo, round(s2.peak_elo, 1) AS peak_elo,
-			round(e30.elo_30, 1) AS elo_30, coalesce(m30.m30, 0) AS m30,
-			CAST(s2.last_d AS VARCHAR) AS last_date
+		SELECT s2.season, s2.name, s2.team, s2.w_key, s2.matches, s2.wins, s2.losses,
+			round(s2.end_elo, 1) AS end_elo, round(e30.elo_30, 1) AS elo_30,
+			CAST(coalesce(m30.m30, 0) AS INTEGER) AS m30, s2.last_d
 		FROM s2
 		LEFT JOIN e30 ON e30.season = s2.season AND e30.name = s2.name
 		LEFT JOIN m30 ON m30.season = s2.season AND m30.name = s2.name
-		ORDER BY s2.season DESC, s2.end_elo DESC
+		"""
+	)
+
+	# Season power rankings (competition ranking, ties share a rank) with the 30-day comparison,
+	# weight-class rank and each wrestler's slot within their team's lineup.
+	con.execute(
+		f"""--sql
+		CREATE TEMP TABLE ranked AS
+		WITH e AS (
+			SELECT * FROM season_stats WHERE matches >= {MIN_SEASON_MATCHES} AND end_elo IS NOT NULL
+		),
+		r AS (SELECT *, rank() OVER (PARTITION BY season ORDER BY end_elo DESC) AS rank FROM e),
+		r30 AS (
+			SELECT season, name, rank() OVER (PARTITION BY season ORDER BY elo_30 DESC) AS rank30
+			FROM e WHERE matches - m30 >= {MIN_SEASON_MATCHES} AND elo_30 IS NOT NULL
+		)
+		SELECT r.season, CAST(r.rank AS INTEGER) AS rank, CAST(r30.rank30 AS INTEGER) AS rank30,
+			CAST(r30.rank30 - r.rank AS INTEGER) AS move,
+			r.name, r.team, r.w_key, r.matches, r.wins, r.losses, r.end_elo,
+			round(r.end_elo - r.elo_30, 1) AS elo_change30, r.m30,
+			CAST(CASE WHEN r.w_key IS NOT NULL THEN rank() OVER (PARTITION BY r.season, r.w_key ORDER BY r.end_elo DESC) END AS INTEGER) AS w_rank,
+			CAST(CASE WHEN r.w_key IS NOT NULL THEN count(*) OVER (PARTITION BY r.season, r.w_key) END AS INTEGER) AS w_n,
+			CAST(CASE WHEN r.team IS NOT NULL THEN row_number() OVER (PARTITION BY r.season, r.team ORDER BY r.end_elo DESC, r.name) END AS INTEGER) AS t_slot
+		FROM r LEFT JOIN r30 USING (season, name)
+		"""
+	)
+
+	copy("rankings.parquet", "SELECT * FROM ranked ORDER BY season DESC, rank, name")
+
+	copy(
+		"teams.parquet",
+		f"""--sql
+		WITH t AS (
+			SELECT season, team,
+				avg(end_elo) FILTER (WHERE t_slot <= {TEAM_DEPTH}) AS score,
+				CAST(count(*) AS INTEGER) AS ranked,
+				CAST(count(*) FILTER (WHERE rank <= 25) AS INTEGER) AS top25,
+				arg_min(name, t_slot) AS best_name,
+				max(end_elo) AS best_elo
+			FROM ranked WHERE team IS NOT NULL
+			GROUP BY season, team HAVING count(*) >= {TEAM_MIN_RANKED}
+		)
+		-- Rounded so equal lineup averages tie despite floating-point summation order
+		SELECT season, CAST(rank() OVER (PARTITION BY season ORDER BY round(score, 6) DESC) AS INTEGER) AS rank,
+			team, round(score, 1) AS score, ranked, top25, best_name, best_elo
+		FROM t ORDER BY season DESC, rank, team
+		""",
+	)
+
+	copy(
+		"season_meta.parquet",
+		"""--sql
+		SELECT s.season,
+			CAST(count(*) AS INTEGER) AS wrestlers,
+			CAST(round(sum(s.matches) / 2) AS INTEGER) AS matches,
+			CAST(max(s.last_d) AS VARCHAR) AS last_date,
+			CAST(count(r.name) AS INTEGER) AS ranked
+		FROM season_stats s LEFT JOIN ranked r USING (season, name)
+		GROUP BY s.season ORDER BY s.season DESC
 		""",
 	)
 
