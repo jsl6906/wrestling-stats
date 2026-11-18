@@ -1,992 +1,230 @@
-# ${observable.params.gov_body.toUpperCase()} Leaderboards
+---
+toc: false
+---
 
 ```js
-const individual_data = FileAttachment(`data/individual_leaderboards_${observable.params.gov_body}.parquet`).parquet();
-const team_data = FileAttachment(`data/team_leaderboards_${observable.params.gov_body}.parquet`).parquet();
+import {fmtDate, fmtInt, fmtPct, formatName, getUrlParam, plain, record, setUrlParams, shortSeason} from "../components/format.js";
+import {emptyState, kpi, nameLink} from "../components/ui.js";
 ```
 
 ```js
-// Calculate date range and total matches across all data
-const dataStats = (() => {
-  const individuals = Array.from(individual_data);
-  
-  // Collect all dates from upset_date field
-  const dates = individuals
-    .map(d => d.upset_date)
-    .filter(Boolean)
-    .map(d => new Date(d))
-    .filter(d => !isNaN(d))
-    .sort((a, b) => a - b);
-  
-  // Calculate total matches across all individual records
-  const totalMatches = individuals.reduce((sum, d) => sum + (Number(d.matches_played) || 0), 0);
-  
-  return {
-    minDate: dates.length > 0 ? dates[0] : null,
-    maxDate: dates.length > 0 ? dates[dates.length - 1] : null,
-    totalMatches
-  };
-})();
+const gb = observable.params.gov_body;
+const govBodies = await FileAttachment("../data/gov_bodies.json").json();
+const gbInfo = govBodies.find((d) => d.suffix === gb) ?? {label: gb.toUpperCase(), fullName: ""};
+const individuals = plain(await FileAttachment(`data/individual_leaderboards_${observable.params.gov_body}.parquet`).parquet());
+const teams = plain(await FileAttachment(`data/team_leaderboards_${observable.params.gov_body}.parquet`).parquet());
 ```
 
 ```js
-// Display date range and total matches subtitle
-(() => {
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  if (!dataStats.minDate || !dataStats.maxDate) {
-    return wrap(`<p style="font-size: 0.9em; font-style: italic; margin: 0 0 20px 0;">No match data available</p>`);
-  }
-  
-  const formatDate = (date) => date.toLocaleDateString('en-US', { 
-    year: 'numeric', 
-    month: 'long', 
-    day: 'numeric' 
-  });
-  
-  return wrap(`<p style="font-size: 0.9em; font-style: italic; margin: 0 0 20px 0;">Data coverage: ${formatDate(dataStats.minDate)} to ${formatDate(dataStats.maxDate)} • ${dataStats.totalMatches.toLocaleString()} total matches</p>`);
-})()
+const ALL_SEASONS = "All seasons";
+const ALL_TEAMS = "All teams";
+const seasonOptions = [ALL_SEASONS, ...d3.sort(new Set(individuals.map((d) => d.season)), (s) => s).reverse()];
+const teamOptions = [ALL_TEAMS, ...d3.sort(new Set(individuals.map((d) => d.team).filter(Boolean)))];
+const urlSeason = getUrlParam("season");
+const urlTeam = getUrlParam("team");
+const seasonInput = Inputs.select(seasonOptions, {
+  label: "Season",
+  value: seasonOptions.includes(urlSeason) ? urlSeason : seasonOptions[0],
+  format: (s) => (s === ALL_SEASONS ? s : shortSeason(s))
+});
+const teamInput = Inputs.select(teamOptions, {label: "Team", value: teamOptions.includes(urlTeam) ? urlTeam : ALL_TEAMS});
+const selectedSeason = Generators.input(seasonInput);
+const selectedTeam = Generators.input(teamInput);
 ```
 
 ```js
-const individuals = Array.from(individual_data);
-const teams = Array.from(team_data);
-```
+setUrlParams({season: selectedSeason === ALL_SEASONS ? null : selectedSeason, team: selectedTeam === ALL_TEAMS ? null : selectedTeam});
+const allSeasons = selectedSeason === ALL_SEASONS;
+const oneTeam = selectedTeam !== ALL_TEAMS;
 
-```js
-import {select} from "npm:@observablehq/inputs";
-import * as Plot from "npm:@observablehq/plot";
-import {FileAttachment, view} from "observablehq:stdlib";
-```
+const withPcts = (d) => ({
+  ...d,
+  win_pct: d.matches_played > 0 ? (100 * d.wins) / d.matches_played : 0,
+  fall_pct: d.wins > 0 ? (100 * d.wins_fall) / d.wins : 0
+});
 
-```js
-// URL parameter utilities
-function getUrlParam(name) {
-  const url = new URL(window.location);
-  return url.searchParams.get(name);
-}
-
-function setUrlParam(name, value) {
-  const url = new URL(window.location);
-  if (value) {
-    url.searchParams.set(name, value);
-  } else {
-    url.searchParams.delete(name);
-  }
-  window.history.replaceState({}, '', url);
-}
-
-const initialSeasonFromUrl = getUrlParam('season');
-const initialTeamFromUrl = getUrlParam('team');
-```
-
-```js
-// Get unique seasons for filtering
-const seasons = ["All Seasons", ...Array.from(new Set(individuals.map(d => d.season))).sort().reverse()];
-const selectedSeason = (() => {
-  const initial = (initialSeasonFromUrl && seasons.includes(initialSeasonFromUrl)) ? initialSeasonFromUrl : seasons[0];
-  const control = select(seasons, {label: "Season", value: initial});
-  control.addEventListener("input", () => {
-    setUrlParam('season', control.value === seasons[0] ? null : control.value);
-  });
-  return view(control);
-})();
-```
-
-```js
-// Get unique teams for filtering
-const teamOptions = ["All Teams", ...Array.from(new Set(individuals.map(d => d.team).filter(Boolean))).sort()];
-const selectedTeam = (() => {
-  const initial = (initialTeamFromUrl && teamOptions.includes(initialTeamFromUrl)) ? initialTeamFromUrl : teamOptions[0];
-  const control = select(teamOptions, {label: "Team", value: initial});
-  control.addEventListener("input", () => {
-    setUrlParam('team', control.value === teamOptions[0] ? null : control.value);
-  });
-  return view(control);
-})();
-```
-
-```js
-// Helper function to get top N with ties (extends beyond N if there are ties at the cutoff)
-function getTopWithTies(data, n, sortFn) {
-  const sorted = [...data].sort(sortFn);
-  if (sorted.length <= n) return sorted;
-  
-  const cutoffValue = sortFn(sorted[n - 1], sorted[n]);
-  if (cutoffValue === 0) {
-    // There's a tie at position n, find where ties end
-    let endIndex = n;
-    while (endIndex < sorted.length && sortFn(sorted[n - 1], sorted[endIndex]) === 0) {
-      endIndex++;
-    }
-    return sorted.slice(0, endIndex);
-  }
-  return sorted.slice(0, n);
-}
-
-// Helper function to assign ranks with ties
-function assignRanks(data, compareFn) {
-  let rank = 1;
-  let prevValue = null;
-  let sameRankCount = 0;
-  
-  return data.map((item, index) => {
-    if (index > 0 && compareFn(data[index - 1], item) !== 0) {
-      rank += sameRankCount + 1;
-      sameRankCount = 0;
-    } else if (index > 0) {
-      sameRankCount++;
-    }
-    return { ...item, rank };
+// "All seasons" sums each wrestler's seasons (filtered to the selected team first, so a
+// wrestler who changed teams only counts their matches for that team).
+function aggregateWrestlers(rows) {
+  return d3.groups(rows, (d) => d.name).map(([name, v]) => {
+    const upset = d3.greatest(v, (d) => d.biggest_upset_win ?? 0);
+    return withPcts({
+      name,
+      team: d3.greatest(v, (d) => d.season).team,
+      matches_played: d3.sum(v, (d) => d.matches_played),
+      wins: d3.sum(v, (d) => d.wins),
+      losses: d3.sum(v, (d) => d.losses),
+      wins_fall: d3.sum(v, (d) => d.wins_fall),
+      highest_elo: d3.max(v, (d) => d.highest_elo),
+      current_elo: v[0].current_elo,
+      biggest_upset_win: upset?.biggest_upset_win ?? 0,
+      upset_date: upset?.upset_date,
+      upset_tournament_name: upset?.upset_tournament_name,
+      upset_opponent_name: upset?.upset_opponent_name,
+      upset_opponent_team: upset?.upset_opponent_team,
+      upset_result: upset?.upset_result
+    });
   });
 }
-```
 
-```js
-// Helper function to format wrestler names as "Last, First M"
-function formatWrestlerName(name) {
-  if (!name || typeof name !== 'string') return name || "-";
-  
-  const parts = name.trim().split(/\s+/);
-  
-  // Handle hyphenated last names that may have been split (e.g., "Cam Cook -Cash")
-  // Join any part starting with hyphen to the previous part
-  for (let i = parts.length - 1; i > 0; i--) {
-    if (parts[i].startsWith('-')) {
-      parts[i - 1] = parts[i - 1] + parts[i];
-      parts.splice(i, 1);
-    }
-  }
-  
-  if (parts.length === 1) {
-    return parts[0]; // Single name, return as is
-  } else if (parts.length === 2) {
-    // First Last -> Last, First
-    return `${parts[1]}, ${parts[0]}`;
-  } else {
-    // First Middle Last or First M Last -> Last, First M
-    const firstName = parts[0];
-    const lastName = parts[parts.length - 1];
-    const middle = parts.slice(1, -1).join(' ');
-    return `${lastName}, ${firstName}${middle ? ' ' + middle : ''}`;
-  }
-}
-```
-
-```js
-// Helper function to create wrestler links
-function createWrestlerLink(wrestlerName, govBody) {
-  if (!wrestlerName) return wrestlerName || "-";
-  const baseUrl = window.location.origin + window.location.pathname.replace(/leaderboards\/.*$/, 'individual_stats/');
-  const url = `${baseUrl}${govBody}?wrestler=${encodeURIComponent(wrestlerName)}`;
-  const displayName = formatWrestlerName(wrestlerName);
-  return `<a href="${url}" target="_blank" rel="noopener noreferrer">${displayName}</a>`;
-}
-```
-
-```js
-// Helper function to convert BigInt values to numbers
-function convertBigInts(obj) {
-  const converted = {};
-  for (const [key, value] of Object.entries(obj)) {
-    converted[key] = typeof value === 'bigint' ? Number(value) : value;
-  }
-  return converted;
-}
-
-// Filter data by season and team
-const filteredIndividuals = (() => {
-  let filtered = selectedSeason === "All Seasons" 
-    ? individuals 
-    : individuals.filter(d => d.season === selectedSeason).map(convertBigInts);
-  
-  // Apply team filter
-  if (selectedTeam !== "All Teams") {
-    filtered = filtered.filter(d => d.team === selectedTeam);
-  }
-  
-  return filtered;
-})();
-
-const filteredTeams = selectedSeason === "All Seasons"
-  ? teams
-  : teams.filter(d => d.season === selectedSeason).map(convertBigInts);
-```
-
-```js
-// Helper to aggregate "All Seasons" data
-function aggregateByWrestler(data) {
-  const byWrestler = new Map();
-  
-  for (const row of data) {
-    const key = row.name;
-    if (!byWrestler.has(key)) {
-      byWrestler.set(key, {
-        name: row.name,
-        team: row.team,
-        season: "All Seasons",
-        matches_played: 0,
-        wins: 0,
-        losses: 0,
-        wins_fall: 0,
-        highest_elo: 0,
-        current_elo: 0,
-        biggest_upset_win: 0,
-        upset_event_id: null,
-        upset_date: null,
-        upset_tournament_name: null
-      });
-    }
-    
-    const agg = byWrestler.get(key);
-    agg.matches_played += Number(row.matches_played) || 0;
-    agg.wins += Number(row.wins) || 0;
-    agg.losses += Number(row.losses) || 0;
-    agg.wins_fall += Number(row.wins_fall) || 0;
-    agg.highest_elo = Math.max(agg.highest_elo, Number(row.highest_elo) || 0);
-    agg.current_elo = Number(row.current_elo) || 0;
-    
-    // Track biggest upset and its details
-    const upsetValue = Number(row.biggest_upset_win) || 0;
-    if (upsetValue > agg.biggest_upset_win) {
-      agg.biggest_upset_win = upsetValue;
-      agg.upset_event_id = row.upset_event_id;
-      agg.upset_date = row.upset_date;
-      agg.upset_tournament_name = row.upset_tournament_name;
-      agg.upset_opponent_name = row.upset_opponent_name;
-      agg.upset_opponent_team = row.upset_opponent_team;
-      agg.upset_result = row.upset_result;
-    }
-  }
-  
-  // Calculate percentages
-  return Array.from(byWrestler.values()).map(d => ({
-    ...d,
-    win_pct: d.matches_played > 0 ? (d.wins / d.matches_played) * 100 : 0,
-    fall_pct: d.wins > 0 ? (d.wins_fall / d.wins) * 100 : 0
-  }));
-}
-
-function aggregateByTeam(data) {
-  const byTeam = new Map();
-  
-  for (const row of data) {
-    const key = row.team;
-    if (!byTeam.has(key)) {
-      byTeam.set(key, {
-        team: row.team,
-        season: "All Seasons",
-        matches_played: 0,
-        wins: 0,
-        losses: 0,
-        wins_fall: 0
-      });
-    }
-    
-    const agg = byTeam.get(key);
-    agg.matches_played += Number(row.matches_played) || 0;
-    agg.wins += Number(row.wins) || 0;
-    agg.losses += Number(row.losses) || 0;
-    agg.wins_fall += Number(row.wins_fall) || 0;
-  }
-  
-  // Calculate percentages
-  return Array.from(byTeam.values()).map(d => ({
-    ...d,
-    win_pct: d.matches_played > 0 ? (d.wins / d.matches_played) * 100 : 0,
-    fall_pct: d.wins > 0 ? (d.wins_fall / d.wins) * 100 : 0
-  }));
-}
-```
-
-```js
-// Get the appropriate data based on season and team selection
-const individualStats = (() => {
-  let stats = selectedSeason === "All Seasons" 
-    ? aggregateByWrestler(individuals)
-    : filteredIndividuals;
-  
-  // Apply team filter to aggregated or filtered data
-  if (selectedTeam !== "All Teams") {
-    stats = stats.filter(d => d.team === selectedTeam);
-  }
-  
-  return stats;
-})();
-
-const teamStats = selectedSeason === "All Seasons"
-  ? aggregateByTeam(teams)
-  : filteredTeams;
-```
-
-```js
-// Calculate dynamic minimum match thresholds based on filtered data
-const minMatchThresholds = (() => {
-  // Helper to calculate percentile
-  const percentile = (arr, p) => {
-    if (arr.length === 0) return 0;
-    const sorted = [...arr].sort((a, b) => a - b);
-    const index = Math.ceil(sorted.length * p) - 1;
-    return sorted[Math.max(0, index)];
-  };
-  
-  // Get matches played for individuals and teams
-  const individualMatches = individualStats.map(d => d.matches_played || 0).filter(m => m > 0);
-  const teamMatches = teamStats.map(d => d.matches_played || 0).filter(m => m > 0);
-  
-  // Calculate median (50th percentile)
-  const individualMedian = percentile(individualMatches, 0.5);
-  const teamMedian = percentile(teamMatches, 0.5);
-  
-  // Determine context to set appropriate bounds
-  const isSingleTeam = selectedTeam !== "All Teams";
-  const isSingleSeason = selectedSeason !== "All Seasons";
-  
-  // Set min/max bounds based on context
-  // More restrictive for broad queries (all teams/seasons), more lenient for narrow queries
-  const individualBounds = {
-    min: isSingleTeam && isSingleSeason ? 3 : (isSingleTeam || isSingleSeason ? 5 : 10),
-    max: isSingleTeam && isSingleSeason ? 8 : (isSingleTeam || isSingleSeason ? 12 : 20)
-  };
-  
-  const teamBounds = {
-    min: isSingleSeason ? 20 : 50,
-    max: isSingleSeason ? 60 : 100
-  };
-  
-  // Calculate threshold as 20% of median, bounded by min/max
-  const calculateThreshold = (median, bounds) => {
-    const threshold = Math.round(median * 0.2);
-    return Math.max(bounds.min, Math.min(bounds.max, threshold));
-  };
-  
-  const individual = individualMatches.length > 0 
-    ? calculateThreshold(individualMedian, individualBounds)
-    : individualBounds.min;
-    
-  const team = teamMatches.length > 0
-    ? calculateThreshold(teamMedian, teamBounds)
-    : teamBounds.min;
-  
-  // Calculate fall thresholds as a fraction of match threshold
-  const individualFall = Math.max(1, Math.round(individual * 0.1));
-  const teamFall = Math.max(3, Math.round(team * 0.1));
-  
-  return {
-    individual,
-    individualFall,
+function aggregateTeams(rows) {
+  return d3.groups(rows, (d) => d.team).map(([team, v]) => withPcts({
     team,
-    teamFall,
-    // Provide context info for display
-    context: isSingleTeam && isSingleSeason ? "single team, single season" :
-             isSingleTeam ? "single team, all seasons" :
-             isSingleSeason ? "all teams, single season" :
-             "all teams, all seasons"
-  };
+    matches_played: d3.sum(v, (d) => d.matches_played),
+    wins: d3.sum(v, (d) => d.wins),
+    losses: d3.sum(v, (d) => d.losses),
+    wins_fall: d3.sum(v, (d) => d.wins_fall)
+  }));
+}
+
+const indRows = individuals.filter((d) => (allSeasons || d.season === selectedSeason) && (!oneTeam || d.team === selectedTeam));
+const individualStats = allSeasons ? aggregateWrestlers(indRows) : indRows;
+const teamStats = allSeasons ? aggregateTeams(teams) : teams.filter((d) => d.season === selectedSeason);
+```
+
+```js
+// Minimum-match thresholds scale with the data: 20% of the median, clamped to bounds that
+// are looser for narrow views (one team and/or one season) and stricter for broad ones.
+const thresholds = (() => {
+  const median = (rows) => d3.quantileSorted(d3.sort(rows.map((d) => d.matches_played).filter((m) => m > 0)), 0.5) ?? 0;
+  const oneSeason = !allSeasons;
+  const indBounds = oneTeam && oneSeason ? [3, 8] : oneTeam || oneSeason ? [5, 12] : [10, 20];
+  const teamBounds = oneSeason ? [20, 60] : [50, 100];
+  const clamp = (v, [lo, hi]) => Math.max(lo, Math.min(hi, v));
+  const individual = clamp(Math.round(median(individualStats) * 0.2), indBounds);
+  const team = clamp(Math.round(median(teamStats) * 0.2), teamBounds);
+  return {individual, individualFall: Math.max(1, Math.round(individual * 0.1)), team, teamFall: Math.max(3, Math.round(team * 0.1))};
 })();
 ```
 
-## Individual Leaderboards
-
-### Top 10 by Matches Played
-
 ```js
-(() => {
-  const sortFn = (a, b) => (b.matches_played || 0) - (a.matches_played || 0);
-  const top = getTopWithTies(individualStats, 10, sortFn);
-  const ranked = assignRanks(top, sortFn);
-  
-  const tableRows = ranked.map(d => `
-    <tr>
-      <td>${d.rank}</td>
-      <td>${createWrestlerLink(d.name, observable.params.gov_body)}</td>
-      <td>${d.team || '-'}</td>
-      <td>${d.wins || 0}-${d.losses || 0}</td>
-      <td>${d.matches_played || 0}</td>
-    </tr>
-  `).join("");
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Wrestler</th>
-          <th>Team</th>
-          <th>Record</th>
-          <th>Matches</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-      </tbody>
-    </table>
-  `);
-})()
-```
+// Top n with ties: extends past n while rows tie the nth, and assigns competition ranks (1, 2, 2, 4…).
+function topWithTies(rows, n, cmp) {
+  const sorted = [...rows].sort(cmp);
+  let end = Math.min(n, sorted.length);
+  while (end < sorted.length && cmp(sorted[end - 1], sorted[end]) === 0) end++;
+  return rankAll(sorted.slice(0, end), cmp);
+}
 
-### Top 10 by Total Wins
+function rankAll(sorted, cmp) {
+  const out = [];
+  sorted.forEach((d, i) => out.push({...d, rank: i > 0 && cmp(sorted[i - 1], d) === 0 ? out[i - 1].rank : i + 1}));
+  return out;
+}
 
-```js
-(() => {
-  const sortFn = (a, b) => (b.wins || 0) - (a.wins || 0);
-  const top = getTopWithTies(individualStats, 10, sortFn);
-  const ranked = assignRanks(top, sortFn);
-  
-  const tableRows = ranked.map(d => `
-    <tr>
-      <td>${d.rank}</td>
-      <td>${createWrestlerLink(d.name, observable.params.gov_body)}</td>
-      <td>${d.team || '-'}</td>
-      <td>${d.wins || 0}</td>
-      <td>${d.wins || 0}-${d.losses || 0}</td>
-      <td>${d.matches_played || 0}</td>
-    </tr>
-  `).join("");
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Wrestler</th>
-          <th>Team</th>
-          <th>Wins</th>
-          <th>Record</th>
-          <th>Total Matches</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-      </tbody>
-    </table>
-  `);
-})()
-```
-
-### Top 10 by Win Percentage
-*Minimum ${minMatchThresholds.individual} matches*
-
-```js
-(() => {
-  const filtered = individualStats.filter(d => (d.matches_played || 0) >= minMatchThresholds.individual);
-  const sortFn = (a, b) => {
-    const pctDiff = (b.win_pct || 0) - (a.win_pct || 0);
-    if (pctDiff !== 0) return pctDiff;
-    return (b.wins || 0) - (a.wins || 0); // Tiebreaker: more wins
-  };
-  const top = getTopWithTies(filtered, 10, sortFn);
-  const ranked = assignRanks(top, (a, b) => {
-    const pctDiff = (b.win_pct || 0) - (a.win_pct || 0);
-    if (pctDiff !== 0) return pctDiff;
-    return (b.wins || 0) - (a.wins || 0);
-  });
-  
-  const tableRows = ranked.map(d => `
-    <tr>
-      <td>${d.rank}</td>
-      <td>${createWrestlerLink(d.name, observable.params.gov_body)}</td>
-      <td>${d.team || '-'}</td>
-      <td>${(d.win_pct || 0).toFixed(1)}%</td>
-      <td>${d.wins || 0}-${d.losses || 0}</td>
-      <td>${d.matches_played || 0}</td>
-    </tr>
-  `).join("");
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Wrestler</th>
-          <th>Team</th>
-          <th>Win %</th>
-          <th>Record</th>
-          <th>Total Matches</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-      </tbody>
-    </table>
-  `);
-})()
-```
-
-### Top 10 by Fall Percentage
-*Minimum ${minMatchThresholds.individual} matches and ${minMatchThresholds.individualFall} fall${minMatchThresholds.individualFall !== 1 ? 's' : ''}*
-
-```js
-(() => {
-  const filtered = individualStats.filter(d => (d.matches_played || 0) >= minMatchThresholds.individual && (d.wins_fall || 0) >= minMatchThresholds.individualFall);
-  
-  if (filtered.length === 0) {
-    const wrap = (html) => {
-      const div = document.createElement("div");
-      div.innerHTML = html.trim();
-      return div.firstChild || div;
-    };
-    return wrap(`<p><em>No wrestlers meet the minimum criteria (${minMatchThresholds.individual} matches and ${minMatchThresholds.individualFall} fall${minMatchThresholds.individualFall !== 1 ? 's' : ''}).</em></p>`);
+const by = (...keys) => (a, b) => {
+  for (const k of keys) {
+    const diff = (b[k] ?? 0) - (a[k] ?? 0);
+    if (diff) return diff;
   }
-  
-  const sortFn = (a, b) => {
-    const pctDiff = (b.fall_pct || 0) - (a.fall_pct || 0);
-    if (pctDiff !== 0) return pctDiff;
-    return (b.wins_fall || 0) - (a.wins_fall || 0); // Tiebreaker: more falls
-  };
-  const top = getTopWithTies(filtered, 10, sortFn);
-  const ranked = assignRanks(top, (a, b) => {
-    const pctDiff = (b.fall_pct || 0) - (a.fall_pct || 0);
-    if (pctDiff !== 0) return pctDiff;
-    return (b.wins_fall || 0) - (a.wins_fall || 0);
-  });
-  
-  const tableRows = ranked.map(d => `
-    <tr>
-      <td>${d.rank}</td>
-      <td>${createWrestlerLink(d.name, observable.params.gov_body)}</td>
-      <td>${d.team || '-'}</td>
-      <td>${(d.fall_pct || 0).toFixed(1)}%</td>
-      <td>${d.wins_fall || 0}</td>
-      <td>${d.wins || 0}</td>
-      <td>${d.wins || 0}-${d.losses || 0}</td>
-    </tr>
-  `).join("");
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Wrestler</th>
-          <th>Team</th>
-          <th>Fall %</th>
-          <th>Falls</th>
-          <th>Total Wins</th>
-          <th>Record</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-      </tbody>
-    </table>
-  `);
-})()
-```
+  return 0;
+};
 
-### Top 10 by Highest Elo Rating
-[What is Elo rating?](#what-is-elo-rating)
-
-```js
-(() => {
-  const sortFn = (a, b) => (b.highest_elo || 0) - (a.highest_elo || 0);
-  const top = getTopWithTies(individualStats, 10, sortFn);
-  const ranked = assignRanks(top, sortFn);
-  
-  const tableRows = ranked.map(d => `
-    <tr>
-      <td>${d.rank}</td>
-      <td>${createWrestlerLink(d.name, observable.params.gov_body)}</td>
-      <td>${d.team || '-'}</td>
-      <td>${Math.round(d.highest_elo || 0)}</td>
-      <td>${Math.round(d.current_elo || 0)}</td>
-      <td>${d.wins || 0}-${d.losses || 0}</td>
-    </tr>
-  `).join("");
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Wrestler</th>
-          <th>Team</th>
-          <th>Highest Elo</th>
-          <th>Current Elo</th>
-          <th>Record</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-      </tbody>
-    </table>
-  `);
-})()
-```
-
-### Top 10 Biggest Upset Winners
-*Largest single-match Elo gain*
-
-```js
-(() => {
-  const filtered = individualStats.filter(d => (d.biggest_upset_win || 0) > 0);
-  const sortFn = (a, b) => (b.biggest_upset_win || 0) - (a.biggest_upset_win || 0);
-  const top = getTopWithTies(filtered, 10, sortFn);
-  const ranked = assignRanks(top, sortFn);
-  
-  const tableRows = ranked.map(d => `
-    <tr>
-      <td>${d.rank}</td>
-      <td>${createWrestlerLink(d.name, observable.params.gov_body)}${d.team ? ` (${d.team})` : ''}</td>
-      <td>${d.upset_opponent_name ? createWrestlerLink(d.upset_opponent_name, observable.params.gov_body) + (d.upset_opponent_team ? ` (${d.upset_opponent_team})` : '') : '-'}</td>
-      <td>${d.upset_result || '-'}</td>
-      <td>+${Math.round(d.biggest_upset_win || 0)}</td>
-      <td>${d.upset_tournament_name || '-'}</td>
-      <td>${d.upset_date ? new Date(d.upset_date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '-'}</td>
-    </tr>
-  `).join("");
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Wrestler</th>
-          <th>Opponent</th>
-          <th>Result</th>
-          <th>Elo Gain</th>
-          <th>Tournament</th>
-          <th>Date</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-      </tbody>
-    </table>
-  `);
-})()
-```
-
-## Team Leaderboards
-
-### Top 10 Teams by Matches Played
-
-```js
-(() => {
-  const sortFn = (a, b) => (b.matches_played || 0) - (a.matches_played || 0);
-  const top = getTopWithTies(teamStats, 10, sortFn);
-  const ranked = assignRanks(top, sortFn);
-  
-  const selectedTeamInTop = selectedTeam !== "All Teams" && ranked.some(d => d.team === selectedTeam);
-  const selectedTeamData = selectedTeam !== "All Teams" && !selectedTeamInTop 
-    ? teamStats.find(d => d.team === selectedTeam)
-    : null;
-  
-  let selectedTeamRank = null;
-  if (selectedTeamData) {
-    const allRanked = assignRanks([...teamStats].sort(sortFn), sortFn);
-    selectedTeamRank = allRanked.find(d => d.team === selectedTeam)?.rank;
+/**
+ * A leaderboard card. For team boards, the selected team is highlighted and, if it falls
+ * outside the top 10, appended below a divider with its overall rank.
+ */
+function board({title, note = "", rows, cmp, value, fmt = fmtInt, label, sub, team = false, base = 0}) {
+  if (!rows.length) return html`<div class="card"><h2>${title}</h2>${note ? html`<h3>${note}</h3>` : ""}${emptyState("No one qualifies yet", "Try a different season or team.")}</div>`;
+  const top = topWithTies(rows, 10, cmp);
+  let extra = null;
+  if (team && oneTeam && !top.some((d) => d.team === selectedTeam)) {
+    extra = rankAll([...rows].sort(cmp), cmp).find((d) => d.team === selectedTeam) ?? null;
   }
-  
-  const createRow = (d, isHighlight = false) => `
-    <tr${isHighlight ? ' style="color: steelblue;"' : ''}>
-      <td>${d.rank}</td>
-      <td>${d.team || '-'}</td>
-      <td>${d.wins || 0}-${d.losses || 0}</td>
-      <td>${d.matches_played || 0}</td>
-    </tr>
-  `;
-  
-  const tableRows = ranked.map(d => 
-    createRow(d, selectedTeam !== "All Teams" && d.team === selectedTeam)
-  ).join("");
-  
-  const extraRows = selectedTeamData && selectedTeamRank ? `
-    <tr><td colspan="4" style="border: none; padding: 8px 0;"></td></tr>
-    ${createRow({...selectedTeamData, rank: selectedTeamRank}, true)}
-  ` : '';
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Team</th>
-          <th>Record</th>
-          <th>Matches</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-        ${extraRows}
-      </tbody>
-    </table>
-  `);
-})()
+  const max = (d3.max(rows, (d) => d[value]) ?? 0) - base || 1;
+  const item = (d) => html`<li class=${team && oneTeam && d.team === selectedTeam ? "highlight" : ""} style=${`--pct:${Math.max(0, (100 * ((d[value] ?? 0) - base)) / max)}%`}>
+    <span class="rk">${d.rank}</span>
+    <span class="nm">${label(d)}<small>${sub(d)}</small></span>
+    <span class="val">${fmt(d[value])}</span>
+  </li>`;
+  return html`<div class="card lb-card">
+    <h2>${title}</h2>
+    ${note ? html`<h3>${note}</h3>` : ""}
+    <ol class="toplist bars">${top.map(item)}${extra ? html`<li class="sep" aria-hidden="true"></li>${item(extra)}` : ""}</ol>
+  </div>`;
+}
+
+const wrestlerLabel = (d) => nameLink(gb, d.name);
+const teamSub = (d) => [oneTeam ? null : d.team, record(d.wins, d.losses)].filter(Boolean).join(" · ");
+const pct1 = (v) => fmtPct(v, 1);
 ```
 
-### Top 10 Teams by Total Wins
+<div class="hero">
+  <img class="hero-logo" src="../assets/logo.png" alt="">
+  <div class="hero-body">
+    <h1>${gbInfo.label} Leaderboards</h1>
+    <h2>${gbInfo.fullName}</h2>
+    <p>Season and career leaders: volume, winning, pins, peak Elo and the biggest upsets. Filter by season or team.</p>
+  </div>
+  <div class="hero-side">${seasonInput}${teamInput}</div>
+</div>
 
 ```js
-(() => {
-  const sortFn = (a, b) => (b.wins || 0) - (a.wins || 0);
-  const top = getTopWithTies(teamStats, 10, sortFn);
-  const ranked = assignRanks(top, sortFn);
-  
-  const selectedTeamInTop = selectedTeam !== "All Teams" && ranked.some(d => d.team === selectedTeam);
-  const selectedTeamData = selectedTeam !== "All Teams" && !selectedTeamInTop 
-    ? teamStats.find(d => d.team === selectedTeam)
-    : null;
-  
-  let selectedTeamRank = null;
-  if (selectedTeamData) {
-    const allRanked = assignRanks([...teamStats].sort(sortFn), sortFn);
-    selectedTeamRank = allRanked.find(d => d.team === selectedTeam)?.rank;
-  }
-  
-  const createRow = (d, isHighlight = false) => `
-    <tr${isHighlight ? ' style="color: steelblue;"' : ''}>
-      <td>${d.rank}</td>
-      <td>${d.team || '-'}</td>
-      <td>${d.wins || 0}</td>
-      <td>${d.wins || 0}-${d.losses || 0}</td>
-      <td>${d.matches_played || 0}</td>
-    </tr>
-  `;
-  
-  const tableRows = ranked.map(d => 
-    createRow(d, selectedTeam !== "All Teams" && d.team === selectedTeam)
-  ).join("");
-  
-  const extraRows = selectedTeamData && selectedTeamRank ? `
-    <tr><td colspan="5" style="border: none; padding: 8px 0;"></td></tr>
-    ${createRow({...selectedTeamData, rank: selectedTeamRank}, true)}
-  ` : '';
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Team</th>
-          <th>Wins</th>
-          <th>Record</th>
-          <th>Total Matches</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-        ${extraRows}
-      </tbody>
-    </table>
-  `);
-})()
+const totalMatches = Math.round(d3.sum(teamStats, (d) => d.matches_played) / 2);
+const scopeLabel = `${allSeasons ? "All seasons" : shortSeason(selectedSeason)}${oneTeam ? ` · ${selectedTeam}` : ""}`;
+display(html`<div class="grid grid-cols-4">
+  ${kpi("Wrestlers", fmtInt(individualStats.length), scopeLabel, {tone: "navy"})}
+  ${oneTeam
+    ? kpi("Team record", (() => { const t = teamStats.find((d) => d.team === selectedTeam); return t ? record(t.wins, t.losses) : "–"; })(), "individual bouts", {tone: "navy"})
+    : kpi("Matches", fmtInt(totalMatches), `${fmtInt(teamStats.length)} teams`, {tone: "navy"})}
+  ${kpi("Win % minimum", `${thresholds.individual} matches`, `teams: ${thresholds.team} matches`)}
+  ${kpi("Fall % minimum", `${thresholds.individualFall} fall${thresholds.individualFall === 1 ? "" : "s"}`, `teams: ${thresholds.teamFall} falls`)}
+</div>`);
 ```
 
-### Top 10 Teams by Win Percentage
-*Minimum ${minMatchThresholds.team} matches*
+<div class="section-title"><h2>Individual leaders</h2><span>Top 10 (ties included) · thresholds adjust to the filter</span></div>
 
 ```js
-(() => {
-  const filtered = teamStats.filter(d => (d.matches_played || 0) >= minMatchThresholds.team);
-  const sortFn = (a, b) => {
-    const pctDiff = (b.win_pct || 0) - (a.win_pct || 0);
-    if (pctDiff !== 0) return pctDiff;
-    return (b.wins || 0) - (a.wins || 0); // Tiebreaker: more wins
-  };
-  const top = getTopWithTies(filtered, 10, sortFn);
-  const ranked = assignRanks(top, (a, b) => {
-    const pctDiff = (b.win_pct || 0) - (a.win_pct || 0);
-    if (pctDiff !== 0) return pctDiff;
-    return (b.wins || 0) - (a.wins || 0);
-  });
-  
-  // Check for selected team
-  const selectedTeamInTop = selectedTeam !== "All Teams" && ranked.some(d => d.team === selectedTeam);
-  const selectedTeamData = selectedTeam !== "All Teams" && !selectedTeamInTop 
-    ? filtered.find(d => d.team === selectedTeam)
-    : null;
-  
-  // Rank the selected team if not in top
-  let selectedTeamRank = null;
-  if (selectedTeamData) {
-    const allRanked = assignRanks([...filtered].sort(sortFn), (a, b) => {
-      const pctDiff = (b.win_pct || 0) - (a.win_pct || 0);
-      if (pctDiff !== 0) return pctDiff;
-      return (b.wins || 0) - (a.wins || 0);
-    });
-    selectedTeamRank = allRanked.find(d => d.team === selectedTeam)?.rank;
-  }
-  
-  const createRow = (d, isHighlight = false) => `
-    <tr${isHighlight ? ' style="color: steelblue;"' : ''}>
-      <td>${d.rank}</td>
-      <td>${d.team || '-'}</td>
-      <td>${(d.win_pct || 0).toFixed(1)}%</td>
-      <td>${d.wins || 0}-${d.losses || 0}</td>
-      <td>${d.matches_played || 0}</td>
-    </tr>
-  `;
-  
-  const tableRows = ranked.map(d => 
-    createRow(d, selectedTeam !== "All Teams" && d.team === selectedTeam)
-  ).join("");
-  
-  const extraRows = selectedTeamData && selectedTeamRank ? `
-    <tr><td colspan="5" style="border: none; padding: 8px 0;"></td></tr>
-    ${createRow({...selectedTeamData, rank: selectedTeamRank}, true)}
-  ` : '';
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Team</th>
-          <th>Win %</th>
-          <th>Record</th>
-          <th>Total Matches</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-        ${extraRows}
-      </tbody>
-    </table>
-  `);
-})()
+display(html`<div class="grid grid-cols-3">
+  ${board({title: "Highest Elo", note: "Peak rating reached (bars from the 1,000 starting rating)", base: 1000, rows: individualStats, cmp: by("highest_elo"), value: "highest_elo", label: wrestlerLabel, sub: (d) => [oneTeam ? null : d.team, `now ${fmtInt(d.current_elo)}`].filter(Boolean).join(" · ")})}
+  ${board({title: "Most wins", rows: individualStats, cmp: by("wins"), value: "wins", label: wrestlerLabel, sub: teamSub})}
+  ${board({title: "Most matches", rows: individualStats, cmp: by("matches_played"), value: "matches_played", label: wrestlerLabel, sub: teamSub})}
+  ${board({title: "Win percentage", note: `Minimum ${thresholds.individual} matches`, rows: individualStats.filter((d) => d.matches_played >= thresholds.individual), cmp: by("win_pct", "wins"), value: "win_pct", fmt: pct1, label: wrestlerLabel, sub: teamSub})}
+  ${board({title: "Fall percentage", note: `Minimum ${thresholds.individual} matches and ${thresholds.individualFall} fall${thresholds.individualFall === 1 ? "" : "s"}`, rows: individualStats.filter((d) => d.matches_played >= thresholds.individual && d.wins_fall >= thresholds.individualFall), cmp: by("fall_pct", "wins_fall"), value: "fall_pct", fmt: pct1, label: wrestlerLabel, sub: (d) => [oneTeam ? null : d.team, `${d.wins_fall} falls in ${d.wins} wins`].filter(Boolean).join(" · ")})}
+  ${board({title: "Most falls", rows: individualStats, cmp: by("wins_fall", "fall_pct"), value: "wins_fall", label: wrestlerLabel, sub: (d) => [oneTeam ? null : d.team, `${fmtPct(d.fall_pct)} of wins`].filter(Boolean).join(" · ")})}
+</div>`);
 ```
 
-### Top 10 Teams by Fall Percentage
-*Minimum ${minMatchThresholds.team} matches and ${minMatchThresholds.teamFall} falls*
+<div class="section-title"><h2>Biggest upsets</h2><span>Largest single-match Elo gain from a win</span></div>
 
 ```js
-(() => {
-  const filtered = teamStats.filter(d => (d.matches_played || 0) >= minMatchThresholds.team && (d.wins_fall || 0) >= minMatchThresholds.teamFall);
-  const sortFn = (a, b) => {
-    const pctDiff = (b.fall_pct || 0) - (a.fall_pct || 0);
-    if (pctDiff !== 0) return pctDiff;
-    return (b.wins_fall || 0) - (a.wins_fall || 0); // Tiebreaker: more falls
-  };
-  const top = getTopWithTies(filtered, 10, sortFn);
-  const ranked = assignRanks(top, (a, b) => {
-    const pctDiff = (b.fall_pct || 0) - (a.fall_pct || 0);
-    if (pctDiff !== 0) return pctDiff;
-    return (b.wins_fall || 0) - (a.wins_fall || 0);
-  });
-  
-  // Check for selected team
-  const selectedTeamInTop = selectedTeam !== "All Teams" && ranked.some(d => d.team === selectedTeam);
-  const selectedTeamData = selectedTeam !== "All Teams" && !selectedTeamInTop 
-    ? filtered.find(d => d.team === selectedTeam)
-    : null;
-  
-  // Rank the selected team if not in top
-  let selectedTeamRank = null;
-  if (selectedTeamData) {
-    const allRanked = assignRanks([...filtered].sort(sortFn), (a, b) => {
-      const pctDiff = (b.fall_pct || 0) - (a.fall_pct || 0);
-      if (pctDiff !== 0) return pctDiff;
-      return (b.wins_fall || 0) - (a.wins_fall || 0);
-    });
-    selectedTeamRank = allRanked.find(d => d.team === selectedTeam)?.rank;
-  }
-  
-  const createRow = (d, isHighlight = false) => `
-    <tr${isHighlight ? ' style="color: steelblue;"' : ''}>
-      <td>${d.rank}</td>
-      <td>${d.team || '-'}</td>
-      <td>${(d.fall_pct || 0).toFixed(1)}%</td>
-      <td>${d.wins_fall || 0}</td>
-      <td>${d.wins || 0}</td>
-      <td>${d.wins || 0}-${d.losses || 0}</td>
-    </tr>
-  `;
-  
-  const tableRows = ranked.map(d => 
-    createRow(d, selectedTeam !== "All Teams" && d.team === selectedTeam)
-  ).join("");
-  
-  const extraRows = selectedTeamData && selectedTeamRank ? `
-    <tr><td colspan="6" style="border: none; padding: 8px 0;"></td></tr>
-    ${createRow({...selectedTeamData, rank: selectedTeamRank}, true)}
-  ` : '';
-  
-  const wrap = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html.trim();
-    return div.firstChild || div;
-  };
-  
-  return wrap(`
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Team</th>
-          <th>Fall %</th>
-          <th>Falls</th>
-          <th>Total Wins</th>
-          <th>Record</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-        ${extraRows}
-      </tbody>
-    </table>
-  `);
-})()
+{
+  const upsets = topWithTies(individualStats.filter((d) => d.biggest_upset_win > 0), 10, by("biggest_upset_win"));
+  display(upsets.length
+    ? Inputs.table(upsets, {
+        columns: ["rank", "name", "upset_opponent_name", "upset_result", "biggest_upset_win", "upset_tournament_name", "upset_date"],
+        header: {rank: "#", name: "Winner", upset_opponent_name: "Beat", upset_result: "Result", biggest_upset_win: "Elo gain", upset_tournament_name: "Tournament", upset_date: "Date"},
+        format: {
+          name: (n, i, data) => html`${nameLink(gb, n)} <small class="muted">${data[i].team ?? ""}</small>`,
+          upset_opponent_name: (n, i, data) => n ? html`${nameLink(gb, n)} <small class="muted">${data[i].upset_opponent_team ?? ""}</small>` : "–",
+          biggest_upset_win: (v) => html`<span class="delta up">+${fmtInt(v)}</span>`,
+          upset_date: fmtDate
+        },
+        width: {rank: 40, biggest_upset_win: 80},
+        sort: "biggest_upset_win",
+        reverse: true,
+        select: false,
+        rows: 10.5
+      })
+    : emptyState("No upsets recorded", "Try a different season or team."));
+}
 ```
 
-## What is Elo rating?
+<div class="section-title"><h2>Team leaders</h2><span>${oneTeam ? `${selectedTeam} highlighted` : "Pick a team above to highlight it"}</span></div>
 
-The Elo rating system is a method for calculating the relative skill levels of players in competitive games, famously used in chess. It assigns a numerical rating that is updated after every match based on the outcome and the difference in the players' ratings. If a higher-rated player wins as expected, they gain only a few points, but if a lower-rated player wins an upset, they earn a significant rating boost. The system is self-correcting over time, rewarding better-than-expected performance with rating increases and penalizing underperformance with decreases, providing an objective measure of a player's relative strength.
+```js
+const teamLabel = (d) => d.team ?? "–";
+display(html`<div class="grid grid-cols-2">
+  ${board({team: true, title: "Most wins", rows: teamStats, cmp: by("wins"), value: "wins", label: teamLabel, sub: (d) => `${record(d.wins, d.losses)} · ${fmtPct(d.win_pct)}`})}
+  ${board({team: true, title: "Win percentage", note: `Minimum ${thresholds.team} matches`, rows: teamStats.filter((d) => d.matches_played >= thresholds.team), cmp: by("win_pct", "wins"), value: "win_pct", fmt: pct1, label: teamLabel, sub: (d) => record(d.wins, d.losses)})}
+  ${board({team: true, title: "Most matches", rows: teamStats, cmp: by("matches_played"), value: "matches_played", label: teamLabel, sub: (d) => record(d.wins, d.losses)})}
+  ${board({team: true, title: "Fall percentage", note: `Minimum ${thresholds.team} matches and ${thresholds.teamFall} falls`, rows: teamStats.filter((d) => d.matches_played >= thresholds.team && d.wins_fall >= thresholds.teamFall), cmp: by("fall_pct", "wins_fall"), value: "fall_pct", fmt: pct1, label: teamLabel, sub: (d) => `${d.wins_fall} falls in ${d.wins} wins`})}
+</div>`);
+```
+
+<details class="method">
+<summary>What is an Elo rating?</summary>
+
+Elo is a rating system (originally from chess) that updates after every match based on the result and the gap between the two ratings. Beating a higher-rated opponent earns many points; beating a much lower-rated one earns few. Over time it gives an objective, self-correcting measure of relative strength. "Biggest upset" is the largest single-match gain from a win, which happens when a lower-rated wrestler beats a much stronger one.
+
+</details>
