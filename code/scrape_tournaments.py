@@ -719,6 +719,26 @@ def run_scraper(args: argparse.Namespace) -> None:
     logger.info("=" * 80)
     cleanup_orphaned_tournaments(db)
 
+    # Events imported from USA Wrestling (event_id 'usaw-…') take precedence; scraping the same
+    # event here would double-count its bouts in Elo.
+    usaw_events = {
+        (name, start)
+        for name, start in db.execute(
+            """--sql
+            SELECT lower(regexp_replace(trim(name), '\\s+', ' ', 'g')), start_date::text
+            FROM tournaments WHERE gov_body = %s AND event_id LIKE 'usaw-%%'
+            """,
+            [GOV_BODY],
+        ).fetchall()
+    }
+    if usaw_events:
+        before = len(discovered)
+        discovered = [
+            t for t in discovered
+            if (" ".join((t.name or "").split()).lower(), t.start_date) not in usaw_events
+        ]
+        if len(discovered) < before:
+            logger.info("Skipping %d tournaments already imported from USA Wrestling", before - len(discovered))
     # Upsert all discovered tournaments
     for t in discovered:
         year = event_year_from_name(t.name) if t.name else None

@@ -85,7 +85,10 @@ def insert_match(conn: psycopg.Connection, row: Dict[str, Any]) -> None:
 
 
 def delete_all_matches(conn: psycopg.Connection) -> tuple[int, int, int]:
-    """Delete all matches, wrestler_history, and wrestlers for this governing body.
+    """Delete TrackWrestling-parsed matches, all wrestler_history, and wrestlers for this governing body.
+
+    Matches imported without raw HTML (USA Wrestling results) are kept and their Elo state is
+    reset so the next calculate_elo.py run recomputes every match in order.
     Returns (matches_deleted, history_deleted, wrestlers_deleted)."""
     history_count = conn.execute(
         """--sql
@@ -93,13 +96,23 @@ def delete_all_matches(conn: psycopg.Connection) -> tuple[int, int, int]:
         """,
         [GOV_BODY],
     ).fetchone()[0]
-    # wrestler_history rows cascade from matches
+    conn.execute("DELETE FROM wrestler_history WHERE gov_body = %s", [GOV_BODY])
     matches_count = conn.execute(
         """--sql
-        DELETE FROM matches WHERE gov_body = %s
+        DELETE FROM matches m
+        WHERE m.gov_body = %s
+          AND NOT EXISTS (
+              SELECT 1 FROM tournament_rounds tr
+              WHERE tr.gov_body = m.gov_body AND tr.event_id = m.event_id
+                AND tr.round_id = m.round_id AND tr.raw_html IS NULL
+          )
         """,
         [GOV_BODY],
     ).rowcount
+    conn.execute(
+        "UPDATE matches SET elo_computed_at = NULL, elo_sequence = NULL WHERE gov_body = %s",
+        [GOV_BODY],
+    )
     wrestlers_count = conn.execute(
         """--sql
         DELETE FROM wrestlers WHERE gov_body = %s

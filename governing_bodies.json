@@ -1,6 +1,6 @@
 [
-  {"id": 230728132, "acronym": "NVWF", "name": "Northern Virginia Wrestling Federation"},
+  {"id": 230728132, "acronym": "NVWF", "name": "Northern Virginia Wrestling Federation", "usaw_results": {"name_pattern": "^NVWF\\b", "since": "2026-07-01"}},
   {"id": 38, "acronym": "NYSPHSAA", "name": "New York State Public High School Athletic Association"},
   {"id": 52, "acronym": "VHSL", "name": "Virginia High School League"},
-  {"id": 253734046, "acronym": "VA_USA", "name": "Virginia USA Wrestling"}
+  {"id": 253734046, "acronym": "VA_USA", "name": "Virginia USA Wrestling", "usaw_results": {"name_pattern": "\\b(VAWA|VA ?USA|Virginia USA)\\b", "since": "2026-07-01"}}
 ]

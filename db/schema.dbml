@@ -192,3 +192,26 @@ Table wrestler_history {
 Ref: wrestler_history.match_id > matches.match_id
 Ref: wrestler_history.(gov_body, event_id) > tournaments.(gov_body, event_id)
 Ref: wrestler_history.(gov_body, name) > wrestlers.(gov_body, name)
+
+Table placements {
+  placement_id bigint [pk, increment]
+  gov_body varchar
+  event_id varchar [note: 'FK to tournaments.event_id (USA Wrestling events: usaw-<id>)']
+  age_group varchar [note: 'Age group / division (e.g., "8U", "High School Girls Folkstyle")']
+  weight varchar [note: 'Weight bracket (e.g., "40", "110-115")']
+  weight_class varchar [note: 'USA Wrestling age_group + weight; TrackWrestling division labels may differ']
+  place integer [note: 'Final place in the bracket (1 = champion)']
+  name varchar [note: 'Wrestler name, normalized like matches winner/loser names']
+  team varchar [note: 'Team / club']
+  raw_placement varchar [note: 'Original "Name (Team)" text']
+  first_seen timestamp [default: `CURRENT_TIMESTAMP`]
+
+  indexes {
+    (gov_body, event_id)
+    (gov_body, name)
+  }
+
+  note: 'Final bracket placements from the USA Wrestling results "Placements" pages'
+}
+
+Ref: placements.(gov_body, event_id) > tournaments.(gov_body, event_id) [delete: cascade]

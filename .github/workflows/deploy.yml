@@ -96,7 +96,20 @@ jobs:
             echo "::group::${GOVERNING_BODY_ACRONYM} — ${GOVERNING_BODY_NAME}"
             uv run code/scrape_tournaments.py --lookback-weeks 1
             uv run code/parse_round_html.py
-            uv run code/calculate_elo.py
+            usaw_pattern=$(jq -r '.usaw_results.name_pattern // empty' <<<"$gb")
+            replaced_flag="$RUNNER_TEMP/usaw_replaced_${GOVERNING_BODY_ACRONYM}"
+            rm -f "$replaced_flag"
+            if [ -n "$usaw_pattern" ]; then
+              uv run code/scrape_usaw_results.py --name-pattern "$usaw_pattern" \
+                --since "$(jq -r '.usaw_results.since' <<<"$gb")" --lookback-weeks 8 \
+                --supersede-incomplete --replaced-flag-file "$replaced_flag"
+            fi
+            if [ -s "$replaced_flag" ]; then
+              echo "USA Wrestling import replaced existing matches; recalculating Elo from scratch"
+              uv run code/calculate_elo.py --recalculate
+            else
+              uv run code/calculate_elo.py
+            fi
             echo "::endgroup::"
           done
 

@@ -8,7 +8,7 @@ const govBodies = await FileAttachment("data/gov_bodies.json").json();
 
 # TrackWrestling Tournament Stats Explorer
 
-This site presents data on the matches of ${govBodies.map(g => g.label).join(", ")}, as reflected in [Trackwrestling.com](https://www.trackwrestling.com/Login.jsp).
+This site presents data on the matches of ${govBodies.map(g => g.label).join(", ")}, as reflected in [Trackwrestling.com](https://www.trackwrestling.com/Login.jsp) and [USA Wrestling results](https://www.themat.com/results).
 
 ## Quick Navigation
 
